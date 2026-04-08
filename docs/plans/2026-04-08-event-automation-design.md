@@ -85,7 +85,7 @@ Claude receives the raw HTML and returns a structured JSON object.
 | `end_time` | No | Best-guess from description; yellow warning shown |
 | `end_time_note` | No | Explanation of guess shown to user |
 | `location` | No | Yellow warning, proceed |
-| `description` | No | Yellow warning, proceed |
+| `description` | No | Yellow warning, proceed. Returned as HTML (bold/italic/links/lists only). |
 | `image_url` | No | Yellow warning, proceed |
 | `source_link_label` | No | Defaults to "See Website for details" |
 

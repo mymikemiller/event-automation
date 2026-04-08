@@ -329,7 +329,7 @@ var EXTRACTION_PROMPT = `You are extracting event details from a webpage. Return
   "end_time": "HH:MM in 24h format, or null if unknown (string|null)",
   "end_time_note": "Explain your best guess for end time, or null if end time was explicit (string|null)",
   "location": "Full location string, or null (string|null)",
-  "description": "Full event description text, or null (string|null)",
+  "description": "Event description as HTML, preserving bold/italic/links/lists from the source page. Use only: <b>, <i>, <ul>, <li>, <a href>, <br>. Strip all other tags. Or null if no description. (string|null)",
   "image_url": "Direct URL to the main event image, or null (string|null)",
   "source_link_label": "One of: 'RSVP on Meetup', 'RSVP on Luma', 'RSVP on Eventbrite', 'RSVP on Facebook', or 'See Website for details' (string)"
 }
@@ -338,6 +338,7 @@ Rules:
 - Return ONLY the JSON object. No markdown, no explanation.
 - For end_time: if not explicitly stated, make a best guess from context (e.g. 'networking dinner' → 2-3 hours, 'workshop' → 3 hours, 'coffee meetup' → 1.5 hours). Always set end_time_note when guessing.
 - For source_link_label: infer from the URL domain if possible.
+- For description: preserve bold/italic/links/lists using only <b>, <i>, <ul>, <li>, <a href>, <br>. Strip all other HTML tags.
 - Dates must be YYYY-MM-DD. Times must be HH:MM (24h).`;
 
 /**
