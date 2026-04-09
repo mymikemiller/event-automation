@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Event Automation</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; color: #333; padding: 16px; }
+    h1 { font-size: 1.3rem; margin-bottom: 16px; color: #1a73e8; }
+    .card { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 16px; }
+    label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 4px; color: #555; }
+    input, textarea { width: 100%; border: 1px solid #ddd; border-radius: 4px; padding: 8px; font-size: 0.95rem; }
+    textarea { min-height: 100px; resize: vertical; }
+    button { width: 100%; padding: 12px; border: none; border-radius: 6px; font-size: 1rem; font-weight: 600; cursor: pointer; margin-top: 8px; }
+    .btn-primary { background: #1a73e8; color: white; }
+    .btn-primary:disabled { background: #aaa; cursor: not-allowed; }
+    .btn-success { background: #34a853; color: white; }
+    .status { padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 0.9rem; }
+    .status.info { background: #e8f0fe; color: #1a73e8; }
+    .status.warn { background: #fef7e0; color: #b06000; border: 1px solid #f9c840; }
+    .status.error { background: #fce8e6; color: #c5221f; }
+    .status.success { background: #e6f4ea; color: #137333; }
+    .field-group { margin-bottom: 12px; }
+    .warning-note { font-size: 0.8rem; color: #b06000; margin-top: 4px; }
+    #url-section, #confirm-section, #result-section { display: none; }
+    #url-section { display: block; }
+    .field-row { display: flex; gap: 8px; }
+    .field-row .field-group { flex: 1; }
+    a.link-btn { display: block; text-align: center; padding: 10px; border-radius: 6px; background: #e8f0fe; color: #1a73e8; text-decoration: none; font-weight: 600; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Event Automation</h1>
+
+  <!-- Step 1: URL Input -->
+  <div id="url-section" class="card">
+    <div class="field-group">
+      <label for="url-input">Event Page URL</label>
+      <input type="url" id="url-input" placeholder="https://..." autocomplete="off">
+    </div>
+    <div id="url-status"></div>
+    <button class="btn-primary" id="extract-btn" onclick="extractEvent()">Extract Event Info</button>
+  </div>
+
+  <!-- Step 2: Confirmation Form -->
+  <div id="confirm-section">
+    <div id="confirm-status"></div>
+    <div class="card">
+      <div class="field-group">
+        <label for="f-title">Title *</label>
+        <input type="text" id="f-title">
+      </div>
+      <div class="field-row">
+        <div class="field-group">
+          <label for="f-date">Date *</label>
+          <input type="date" id="f-date">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field-group">
+          <label for="f-start">Start Time *</label>
+          <input type="time" id="f-start">
+        </div>
+        <div class="field-group">
+          <label for="f-end">End Time</label>
+          <input type="time" id="f-end">
+          <div id="end-time-note" class="warning-note"></div>
+        </div>
+      </div>
+      <div class="field-group">
+        <label for="f-location">Location</label>
+        <input type="text" id="f-location">
+      </div>
+      <div class="field-group">
+        <label for="f-description">Description</label>
+        <textarea id="f-description"></textarea>
+      </div>
+      <div class="field-group">
+        <label for="f-link-label">Source Link Label</label>
+        <input type="text" id="f-link-label">
+      </div>
+      <div class="field-group">
+        <label for="f-image-url">Image URL</label>
+        <input type="url" id="f-image-url">
+      </div>
+      <div id="submit-status"></div>
+      <button class="btn-success" id="submit-btn" onclick="submitEvent()">Create Calendar Event</button>
+      <button class="btn-primary" style="background:#888;margin-top:8px" onclick="reset()">Start Over</button>
+    </div>
+  </div>
+
+  <!-- Step 3: Result -->
+  <div id="result-section" class="card">
+    <div id="result-status"></div>
+    <div id="result-links"></div>
+    <button class="btn-primary" style="margin-top:12px" onclick="reset()">Add Another Event</button>
+  </div>
+
+  <script>
+    var sourceUrl = '';
+
+    function setStatus(elId, type, msg) {
+      var el = document.getElementById(elId);
+      el.className = 'status ' + type;
+      el.textContent = msg;
+    }
+    function clearStatus(elId) {
+      var el = document.getElementById(elId);
+      el.className = '';
+      el.textContent = '';
+    }
+    function show(id) { document.getElementById(id).style.display = 'block'; }
+    function hide(id) { document.getElementById(id).style.display = 'none'; }
+
+    function extractEvent() {
+      var url = document.getElementById('url-input').value.trim();
+      if (!url) { setStatus('url-status', 'error', 'Please enter a URL.'); return; }
+
+      sourceUrl = url;
+      document.getElementById('extract-btn').disabled = true;
+      setStatus('url-status', 'info', 'Fetching page and extracting event info...');
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          document.getElementById('extract-btn').disabled = false;
+          if (result.error) {
+            setStatus('url-status', 'error', result.error);
+            return;
+          }
+          populateForm(result.data);
+        })
+        .withFailureHandler(function(err) {
+          document.getElementById('extract-btn').disabled = false;
+          setStatus('url-status', 'error', 'Unexpected error: ' + err.message);
+        })
+        .processEventUrl(url);
+    }
+
+    function populateForm(data) {
+      document.getElementById('f-title').value = data.title || '';
+      document.getElementById('f-date').value = data.date || '';
+      document.getElementById('f-start').value = data.start_time || '';
+      document.getElementById('f-end').value = data.end_time || '';
+      document.getElementById('f-location').value = data.location || '';
+      document.getElementById('f-description').value = data.description || '';
+      document.getElementById('f-link-label').value = data.source_link_label || 'See Website for details';
+      document.getElementById('f-image-url').value = data.image_url || '';
+
+      // Show end time note if guessed
+      var noteEl = document.getElementById('end-time-note');
+      noteEl.textContent = data.end_time_note ? '⚠ ' + data.end_time_note : '';
+
+      // Show warnings for missing optional fields
+      var warnings = [];
+      if (!data.location) warnings.push('location');
+      if (!data.description) warnings.push('description');
+      if (!data.image_url) warnings.push('image URL');
+
+      clearStatus('confirm-status');
+      if (warnings.length) {
+        setStatus('confirm-status', 'warn', 'Could not find: ' + warnings.join(', ') + '. You can fill these in manually.');
+      }
+
+      hide('url-section');
+      show('confirm-section');
+    }
+
+    function submitEvent() {
+      var title = document.getElementById('f-title').value.trim();
+      var date = document.getElementById('f-date').value;
+      var startTime = document.getElementById('f-start').value;
+
+      if (!title || !date || !startTime) {
+        setStatus('submit-status', 'error', 'Title, date, and start time are required.');
+        return;
+      }
+
+      document.getElementById('submit-btn').disabled = true;
+      setStatus('submit-status', 'info', 'Creating calendar event and saving image...');
+
+      var eventData = {
+        title: title,
+        date: date,
+        start_time: startTime,
+        end_time: document.getElementById('f-end').value,
+        location: document.getElementById('f-location').value.trim(),
+        description: document.getElementById('f-description').value.trim(),
+        source_link_label: document.getElementById('f-link-label').value.trim(),
+        image_url: document.getElementById('f-image-url').value.trim(),
+        source_url: sourceUrl
+      };
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          document.getElementById('submit-btn').disabled = false;
+          if (result.error) {
+            setStatus('submit-status', 'error', result.error +
+              (result.partial && result.partial.driveUrl ? ' Image was saved: ' + result.partial.driveUrl : ''));
+            return;
+          }
+          showResult(result);
+        })
+        .withFailureHandler(function(err) {
+          document.getElementById('submit-btn').disabled = false;
+          setStatus('submit-status', 'error', 'Unexpected error: ' + err.message);
+        })
+        .submitEvent(eventData);
+    }
+
+    function showResult(result) {
+      hide('url-section');
+      hide('confirm-section');
+      show('result-section');
+
+      var statusMsg = 'Event created successfully!';
+      var statusType = 'success';
+
+      if (result.duplicate) {
+        statusMsg = 'Event created. Note: an event with this title already existed on this date.';
+        statusType = 'warn';
+      }
+      if (result.attachmentWarning) {
+        statusMsg += ' (Image saved to Drive but could not be attached: ' + result.attachmentWarning + ')';
+        statusType = 'warn';
+      }
+
+      setStatus('result-status', statusType, statusMsg);
+
+      var links = '';
+      if (result.calendarUrl) {
+        links += '<a class="link-btn" href="' + result.calendarUrl + '" target="_blank">View Calendar Event</a>';
+      }
+      if (result.driveUrl) {
+        links += '<a class="link-btn" href="' + result.driveUrl + '" target="_blank">View Image in Drive</a>';
+      }
+      document.getElementById('result-links').innerHTML = links;
+    }
+
+    function reset() {
+      document.getElementById('url-input').value = '';
+      sourceUrl = '';
+      clearStatus('url-status');
+      hide('confirm-section');
+      hide('result-section');
+      show('url-section');
+    }
+  </script>
+</body>
+</html>
