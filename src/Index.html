@@ -93,6 +93,7 @@
   <!-- Step 3: Result -->
   <div id="result-section" class="card">
     <div id="result-status"></div>
+    <div id="result-title" style="display:none;font-size:1.1rem;font-weight:600;margin:8px 0 4px"></div>
     <div id="result-links"></div>
     <button class="btn-primary" style="margin-top:12px" onclick="reset()">Add Another Event</button>
   </div>
@@ -226,6 +227,11 @@
       }
 
       setStatus('result-status', statusType, statusMsg);
+      if (result.title) {
+        var titleEl = document.getElementById('result-title');
+        titleEl.textContent = result.title;
+        titleEl.style.display = 'block';
+      }
 
       var links = '';
       if (result.calendarUrl) {
@@ -234,11 +240,22 @@
       if (result.driveUrl) {
         links += '<a class="link-btn" href="' + result.driveUrl + '" target="_blank">View Image in Drive</a>';
       }
+      if (result.imageUrl) {
+        links += '<button onclick="copyImageUrl()" class="btn-primary" style="margin-top:8px">Copy Image URL</button>' +
+                 '<input id="img-url-text" type="text" readonly value="' + result.imageUrl + '" style="margin-top:6px;font-size:0.8rem">';
+      }
       document.getElementById('result-links').innerHTML = links;
+    }
+
+    function copyImageUrl() {
+      var input = document.getElementById('img-url-text');
+      input.select();
+      try { document.execCommand('copy'); } catch(e) {}
     }
 
     function reset() {
       document.getElementById('url-input').value = '';
+      document.getElementById('result-title').style.display = 'none';
       sourceUrl = '';
       clearStatus('url-status');
       hide('confirm-section');

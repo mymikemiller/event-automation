@@ -48,7 +48,7 @@ function submitEvent(eventData) {
   // 3. Build full description with source link appended
   var fullDescription = (eventData.description || '').trim();
   if (eventData.source_link_label && eventData.source_url) {
-    fullDescription += '\n\n' + eventData.source_link_label + ': ' + eventData.source_url;
+    fullDescription += '\n\n<a href="' + eventData.source_url + '">' + eventData.source_link_label + '</a>';
   }
 
   // 4. Create Calendar event
@@ -78,11 +78,18 @@ function submitEvent(eventData) {
     );
   }
 
+  var userEmail = Session.getActiveUser().getEmail();
+  var calendarUrl = calResult.eventUrl +
+    (calResult.eventUrl.indexOf('?') >= 0 ? '&' : '?') +
+    'authuser=' + userEmail;
+
   return {
     success: true,
     duplicate: duplicate,
-    calendarUrl: calResult.eventUrl,
+    title: eventData.title,
+    calendarUrl: calendarUrl,
     driveUrl: driveResult ? driveResult.fileUrl : null,
+    imageUrl: eventData.image_url || null,
     attachmentWarning: (driveResult && attachResult && attachResult.error) ? attachResult.error : null
   };
 }

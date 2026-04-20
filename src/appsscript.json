@@ -1,6 +1,13 @@
 {
-  "timeZone": "America/New_York",
+  "timeZone": "America/Chicago",
   "dependencies": {
+    "enabledAdvancedServices": [
+      {
+        "userSymbol": "Calendar",
+        "serviceId": "calendar",
+        "version": "v3"
+      }
+    ]
   },
   "exceptionLogging": "STACKDRIVER",
   "runtimeVersion": "V8"
