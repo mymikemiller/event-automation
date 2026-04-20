@@ -42,17 +42,20 @@ var EXTRACTION_PROMPT = `You are extracting event details from a webpage. Return
   "end_time": "HH:MM in 24h format, or null if unknown (string|null)",
   "end_time_note": "Explain your best guess for end time, or null if end time was explicit (string|null)",
   "location": "Full location string, or null (string|null)",
-  "description": "Event description as HTML, preserving bold/italic/links/lists from the source page. Use only: <b>, <i>, <ul>, <li>, <a href>, <br>. Strip all other tags. Or null if no description. (string|null)",
+  "description": "COMPLETE event description as HTML. Copy ALL body text word-for-word — every paragraph, bullet point, and formatted text that describes the event. Do NOT use og:description or twitter:description meta tags as the source — those are truncated previews. Find the full description in the page body and copy it entirely without summarizing or omitting any text. Use only: <b>, <i>, <ul>, <li>, <a href>, <br>. Strip all other tags. Or null if no description. (string|null)",
   "image_url": "Direct URL to the main event image, or null (string|null)",
   "source_link_label": "One of: 'RSVP on Meetup', 'RSVP on Luma', 'RSVP on Eventbrite', 'RSVP on Facebook', or 'See Website for details' (string)"
 }
 
 Rules:
 - Return ONLY the JSON object. No markdown, no explanation.
-- For end_time: if not explicitly stated, make a best guess from context (e.g. 'networking dinner' → 2-3 hours, 'workshop' → 3 hours, 'coffee meetup' → 1.5 hours). Always set end_time_note when guessing.
+- If iCal event data is present (marked === ICAL EVENT DATA ===), use DTSTART as the authoritative date and start_time, DTEND for end_time. Times ending in Z are UTC — convert to the event's local timezone using the location as context (e.g., Texas = Central Time, UTC-5 CDT / UTC-6 CST).
+- If JSON-LD structured data is present (marked with === STRUCTURED EVENT DATA ===), use it as the authoritative source for date, start_time, and end_time.
+- For end_time: only guess if it is truly not stated anywhere on the page (including structured data and iCal). If you guess, always set end_time_note. Typical durations: networking dinner → 2-3h, workshop → 3h, coffee meetup → 1.5h.
 - For source_link_label: infer from the URL domain if possible.
-- For description: preserve bold/italic/links/lists using only <b>, <i>, <ul>, <li>, <a href>, <br>. Strip all other HTML tags.
-- Dates must be YYYY-MM-DD. Times must be HH:MM (24h).`;
+- For description: copy ALL body text word-for-word. Do NOT summarize or truncate. Preserve bold/italic/links/lists using only <b>, <i>, <ul>, <li>, <a href>, <br>. Strip all other HTML tags.
+- Dates must be YYYY-MM-DD. Times must be HH:MM (24h).
+- For dates where the year is not explicitly stated: use the nearest future occurrence relative to today. Never infer a date in the past.`;
 
 /**
  * Fetches a URL and extracts event data using Claude.
@@ -73,11 +76,42 @@ function extractEventData(url) {
     return { error: 'Could not reach the URL: ' + e.message };
   }
 
-  // Strip script/style tags to reduce token usage
+  // Extract JSON-LD structured data before stripping scripts — event sites like Luma
+  // embed authoritative date/time here and it's the most reliable source.
+  var jsonLdBlocks = [];
+  var jsonLdRegex = /<script[^>]+type=['"]application\/ld\+json['"][^>]*>([\s\S]*?)<\/script>/gi;
+  var jsonLdMatch;
+  while ((jsonLdMatch = jsonLdRegex.exec(html)) !== null) {
+    jsonLdBlocks.push(jsonLdMatch[1].trim());
+  }
+
+  // Strip non-structured scripts and styles to reduce token usage, then strip
+  // noisy presentation attributes (class, style, data-*, aria-*) that waste
+  // tokens without contributing text content.
   var cleaned = html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<script(?![^>]+type=['"]application\/ld\+json['"])[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .substring(0, 30000); // cap at ~30k chars
+    .replace(/ (?:class|style|tabindex|onfocus|onmouseup|onclick|onload|onchange|onsubmit)="[^"]*"/gi, '')
+    .replace(/ (?:data-|aria-)[a-z][a-z-]*="[^"]*"/gi, '')
+    .substring(0, 30000);
+
+  // Look for iCal download links — these are the authoritative date/time source
+  // for sites like BetterUnite that render dates via JavaScript.
+  var icalSection = extractICalSection_(html, url);
+
+  // Prepend JSON-LD and iCal prominently so Claude sees them as authoritative
+  var structuredPrefix = '';
+  if (jsonLdBlocks.length > 0) {
+    structuredPrefix += '=== STRUCTURED EVENT DATA (JSON-LD) — AUTHORITATIVE SOURCE FOR DATE/TIME/TITLE ===\n' +
+                        jsonLdBlocks.join('\n') +
+                        '\n=== END STRUCTURED DATA ===\n\n';
+  }
+  if (icalSection) {
+    structuredPrefix += icalSection + '\n\n';
+  }
+  if (structuredPrefix) {
+    cleaned = structuredPrefix + cleaned;
+  }
 
   var result = callClaude_(cleaned, false);
   if (result === null) {
@@ -88,6 +122,51 @@ function extractEventData(url) {
     return { error: 'Could not extract event data from this page. Please try a different URL or fill in the fields manually.' };
   }
   return { data: result };
+}
+
+/**
+ * Looks for iCal download links in the HTML, fetches the first one found,
+ * and returns a structured text block for Claude to use as authoritative
+ * date/time. Returns null if no iCal link is found or fetch fails.
+ * @param {string} html - Raw page HTML
+ * @param {string} pageUrl - Original page URL (for resolving relative links)
+ * @returns {string|null}
+ */
+function extractICalSection_(html, pageUrl) {
+  // Match href values that look like iCal download links
+  var icalRegex = /href="([^"]*(?:AddToCalendar[^"]*[Ii][Cc]al|type=[Ii][Cc]al|\.ics)[^"]*)"/i;
+  var match = icalRegex.exec(html);
+  if (!match) return null;
+
+  var icalUrl = match[1];
+  // Resolve relative URLs
+  if (icalUrl.charAt(0) === '/') {
+    var baseMatch = pageUrl.match(/^(https?:\/\/[^\/]+)/);
+    if (baseMatch) icalUrl = baseMatch[1] + icalUrl;
+  }
+
+  try {
+    var resp = UrlFetchApp.fetch(icalUrl, { muteHttpExceptions: true });
+    if (resp.getResponseCode() !== 200) return null;
+    var ical = resp.getContentText();
+
+    var dtStart = (ical.match(/DTSTART[^:]*:(\S+)/) || [])[1];
+    var dtEnd   = (ical.match(/DTEND[^:]*:(\S+)/)   || [])[1];
+    var summary = (ical.match(/SUMMARY:(.+)/)        || [])[1];
+    var loc     = (ical.match(/LOCATION:(.+)/)       || [])[1];
+
+    if (!dtStart) return null;
+
+    var lines = ['=== ICAL EVENT DATA — AUTHORITATIVE SOURCE FOR DATE/TIME ==='];
+    lines.push('DTSTART: ' + dtStart + (dtStart.slice(-1) === 'Z' ? ' (UTC)' : ''));
+    if (dtEnd) lines.push('DTEND: ' + dtEnd + (dtEnd.slice(-1) === 'Z' ? ' (UTC)' : ''));
+    if (summary) lines.push('SUMMARY: ' + summary.trim());
+    if (loc)     lines.push('LOCATION: ' + loc.trim());
+    lines.push('=== END ICAL DATA ===');
+    return lines.join('\n');
+  } catch (e) {
+    return null;
+  }
 }
 
 /**
@@ -102,9 +181,12 @@ function callClaude_(htmlContent, strict) {
     ? EXTRACTION_PROMPT + '\n\nCRITICAL: Your previous response was not valid JSON. Return ONLY the raw JSON object starting with { and ending with }. Absolutely no other text.'
     : EXTRACTION_PROMPT;
 
+  var today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  systemPrompt = 'Today\'s date is ' + today + '.\n\n' + systemPrompt;
+
   var payload = {
     model: CLAUDE_MODEL,
-    max_tokens: 1024,
+    max_tokens: 4096,
     system: systemPrompt,
     messages: [{ role: 'user', content: 'Extract event details from this HTML:\n\n' + htmlContent }]
   };
