@@ -64,9 +64,28 @@ Rules:
  * @returns {{data: Object}|{error: string}}
  */
 function extractEventData(url) {
+  // Facebook event pages are heavily JS-rendered — the HTML GAS fetches
+  // server-side is mostly empty. Use the Graph API Events endpoint instead,
+  // which works for public events using just app credentials (no user login).
+  if (url.indexOf('facebook.com/events/') >= 0) {
+    var fbEvent = fetchFacebookEventViaApi_(url);
+    if (fbEvent && !fbEvent.apiError) {
+      var content = formatFacebookEventForClaude_(fbEvent, url);
+      var result = callClaude_(content, false);
+      if (result === null) result = callClaude_(content, true);
+      if (result) {
+        if (!result.image_url && fbEvent.cover && fbEvent.cover.source) {
+          result.image_url = fbEvent.cover.source;
+        }
+        return { data: result };
+      }
+    }
+    // Fall through to HTML extraction if API unavailable (no credentials)
+  }
+
   var html;
   try {
-    var response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    var response = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
     var code = response.getResponseCode();
     if (code !== 200) {
       return { error: 'Could not fetch the page (HTTP ' + code + '). It may be behind a login or paywall.' };
@@ -74,6 +93,25 @@ function extractEventData(url) {
     html = response.getContentText();
   } catch (e) {
     return { error: 'Could not reach the URL: ' + e.message };
+  }
+
+  var loginWall = detectLoginWall_(html, url);
+  if (loginWall) {
+    // If we're authenticated with Facebook, try the Graph API before giving up
+    if (loginWall.platform === 'Facebook') {
+      var fbPost = fetchFacebookPostContent_(url);
+      if (fbPost && !fbPost.apiError) {
+        var result = callClaude_(fbPost.text, false);
+        if (result === null) result = callClaude_(fbPost.text, true);
+        if (result) {
+          if (!result.image_url && fbPost.imageUrl) result.image_url = fbPost.imageUrl;
+          return { data: result };
+        }
+      } else if (fbPost && fbPost.apiError) {
+        loginWall.apiError = fbPost.apiError;
+      }
+    }
+    return loginWall;
   }
 
   // Extract JSON-LD structured data before stripping scripts — event sites like Luma
@@ -122,6 +160,42 @@ function extractEventData(url) {
     return { error: 'Could not extract event data from this page. Please try a different URL or fill in the fields manually.' };
   }
   return { data: result };
+}
+
+/**
+ * Detects if the fetched page is a login wall rather than actual event content.
+ * Returns a loginRequired result object, or null if no wall detected.
+ * @param {string} html - Raw page HTML
+ * @param {string} url - Original URL
+ * @returns {{loginRequired: true, platform: string, creatorUrl: string|null}|null}
+ */
+function detectLoginWall_(html, url) {
+  if (url.indexOf('facebook.com') >= 0) {
+    var t = html.toLowerCase();
+
+    // Only flag pages where the response IS the login page, not pages that
+    // merely include login UI in their header/footer (which is all of Facebook).
+    // Reliable signals: the page <title> is login-related, or the actual login
+    // form fields (email + password) are the primary page content.
+    var isFbLoginWall =
+      t.indexOf('<title>log in to facebook') >= 0 ||
+      t.indexOf('<title>facebook – log in') >= 0 ||
+      t.indexOf('<title>facebook - log in') >= 0 ||
+      t.indexOf('<title>facebook — log in') >= 0 ||
+      (html.indexOf('id="login_form"') >= 0 &&
+       html.indexOf('name="email"') >= 0 &&
+       html.indexOf('name="pass"') >= 0);
+
+    if (isFbLoginWall) {
+      var groupMatch = url.match(/facebook\.com\/groups\/([^\/\?#]+)/);
+      var creatorUrl = groupMatch
+        ? 'https://www.facebook.com/groups/' + groupMatch[1] + '/'
+        : url;
+      return { loginRequired: true, platform: 'Facebook', creatorUrl: creatorUrl, originalUrl: url };
+    }
+  }
+
+  return null;
 }
 
 /**

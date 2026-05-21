@@ -6,9 +6,25 @@ function test_processEventUrl_badUrl() {
 
 /**
  * GAS Web App entry point — serves the HTML UI.
+ * Uses createTemplateFromFile so the web app URL can be reliably embedded
+ * into the page at serve time (ScriptApp.getService().getUrl() only works
+ * in doGet context, not when called via google.script.run).
  */
-function doGet() {
-  return HtmlService.createHtmlOutputFromFile('Index')
+function doGet(e) {
+  var webAppUrl = ScriptApp.getService().getUrl();
+
+  // Facebook OAuth callback arrives as ?code=...&state=...
+  if (e && e.parameter && e.parameter.code && e.parameter.state) {
+    var cb = HtmlService.createTemplateFromFile('OAuthCallback');
+    cb.webAppUrl = webAppUrl;
+    return cb.evaluate()
+      .setTitle('Connecting...')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
+
+  var t = HtmlService.createTemplateFromFile('Index');
+  t.webAppUrl = webAppUrl;
+  return t.evaluate()
     .setTitle('Event Automation')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
@@ -16,13 +32,31 @@ function doGet() {
 /**
  * Called by the UI: fetches a URL and returns extracted event data for preview.
  * @param {string} url
- * @returns {{data: Object}|{error: string}}
+ * @returns {{data: Object}|{error: string}|{loginRequired: true, ...}}
  */
 function processEventUrl(url) {
   if (!url || !url.startsWith('http')) {
     return { error: 'Please enter a valid URL starting with http.' };
   }
   return extractEventData(url);
+}
+
+/**
+ * Called by the UI when the user pastes raw event content (e.g. from a
+ * Facebook post they can see while logged in). Passes the text to Claude.
+ * @param {string} text - Pasted post/page content
+ * @param {string} sourceUrl - Original URL for context
+ * @returns {{data: Object}|{error: string}}
+ */
+function processEventText(text, sourceUrl) {
+  if (!text || text.trim().length < 20) {
+    return { error: 'Please paste more content — not enough text to extract from.' };
+  }
+  var content = '=== PASTED EVENT CONTENT ===\nSource URL: ' + (sourceUrl || '') + '\n\n' + text.trim() + '\n=== END PASTED CONTENT ===';
+  var result = callClaude_(content, false);
+  if (result === null) result = callClaude_(content, true);
+  if (result === null) return { error: 'Could not extract event data from the pasted text. Try including more of the post.' };
+  return { data: result };
 }
 
 /**

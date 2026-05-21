@@ -40,6 +40,44 @@ In the Apps Script editor, go to **Project Settings → Script Properties** and 
 
 ---
 
+## Facebook Login (optional — needed for private/group events)
+
+Connecting a Facebook account lets the app fetch group posts via the Graph API instead of scraping, which is required for any page behind a login wall.
+
+### 1. Create a Facebook App
+
+1. Go to [developers.facebook.com](https://developers.facebook.com) and click **My Apps → Create App**.
+2. Choose app type **"Other"** → **"Consumer"**.
+3. Give it a name (e.g. "Event Automation") and click **Create App**.
+
+### 2. Add Facebook Login
+
+1. From your app dashboard, click **Add a Product** and find **Facebook Login** → click **Set Up**.
+2. Choose **Web** as the platform.
+3. In the left sidebar, go to **Facebook Login → Settings**.
+4. Under **Valid OAuth Redirect URIs**, add your GAS web app URL (see Deploy section below — you need to deploy first to get this URL).
+5. Click **Save Changes**.
+
+### 3. Add credentials to Script Properties
+
+In the Apps Script editor, go to **Project Settings → Script Properties** and add:
+
+| Key | Value |
+|-----|-------|
+| `FACEBOOK_APP_ID` | Found on your app dashboard under **App ID** |
+| `FACEBOOK_APP_SECRET` | Found under **App Settings → Basic → App Secret** |
+
+### 4. Add yourself as a test user
+
+Until your app goes through Facebook's App Review, it only works for people with a role in your Facebook App. To add yourself:
+
+1. In the app dashboard, go to **Roles → Test Users** (or **Roles → Roles**).
+2. Add your Facebook account as a **Developer** or **Tester**.
+
+After that, clicking **Connect** in the app will let you log in with your Facebook account and extract events from group posts.
+
+---
+
 ## Deploy
 
 Push local code to Apps Script and create/update the web app deployment:
@@ -47,19 +85,24 @@ Push local code to Apps Script and create/update the web app deployment:
 ```bash
 # Push all files in src/ to the bound Apps Script project
 clasp push
+```
 
-# Open the Apps Script editor to manage deployments
+That's it — `clasp push` deploys the code. The `/dev` URL immediately reflects the latest push.
+
+To create or update the versioned web app (the `/exec` URL), open the editor once:
+
+```bash
 clasp open-script
 ```
 
-In the editor: **Deploy → Manage deployments → New deployment** (or update an existing one).
+Then **Deploy → Manage deployments → New deployment** (first time) or **Edit → Deploy** (subsequent times).
 - Type: **Web app**
 - Execute as: **Me**
 - Who has access: **Anyone with Google account** (or restrict to your domain)
 
-Copy the web app URL — that's what you open to use the app.
+Copy the web app URL — that's what you open to use the app, and what you add as the Facebook Login redirect URI.
 
-> After any code change: run `clasp push`, then in the editor use **Deploy → Manage deployments → Edit** (pencil icon) and click **Deploy** to update the existing deployment. The URL stays the same.
+> After any code change: just run `clasp push`. The versioned `/exec` URL won't update until you redeploy from the editor, but the `/dev` URL always runs the latest push.
 
 ---
 
