@@ -22,6 +22,27 @@ function test_parseClaudeResponse() {
   Logger.log('test_parseClaudeResponse: ALL PASSED');
 }
 
+function test_extractMeetupImage() {
+  // Meetup embeds the full photo as highres_<id> in its page state; we should
+  // rewrite it to a width-capped webp and ignore the square classic-events crop.
+  var html =
+    '<meta property="og:image" content="https://secure.meetupstatic.com/photos/event/8/0/1/1/600_534572785.jpeg"/>' +
+    '<script type="application/ld+json">{"image":["https://secure-content.meetupstatic.com/images/classic-events/534572785/676x676.jpg"]}</script>' +
+    '"displayPhoto":{"id":"534572785","source":"https://secure.meetupstatic.com/photos/event/8/0/1/1/highres_534572785.jpeg"}';
+
+  var result = extractMeetupImage_(html);
+  if (result !== 'https://secure.meetupstatic.com/photos/event/8/0/1/1/highres_534572785.webp?w=1080') {
+    throw new Error('Unexpected Meetup image URL: ' + result);
+  }
+
+  // No highres photo present → null, so we fall back to Claude's pick.
+  if (extractMeetupImage_('<html><img src="https://example.com/a.png"></html>') !== null) {
+    throw new Error('expected null when no highres photo present');
+  }
+
+  Logger.log('test_extractMeetupImage: ALL PASSED');
+}
+
 function test_extractEventData_live() {
   // Replace with a real public event URL for testing
   var url = 'https://lu.ma/some-event';
@@ -159,7 +180,32 @@ function extractEventData(url) {
   if (result === null) {
     return { error: 'Could not extract event data from this page. Please try a different URL or fill in the fields manually.' };
   }
+
+  // Meetup only surfaces square/small crops in og:image and JSON-LD, so Claude
+  // picks a cropped image. Override with the full landscape photo when present.
+  if (url.indexOf('meetup.com') >= 0) {
+    var meetupImg = extractMeetupImage_(html);
+    if (meetupImg) result.image_url = meetupImg;
+  }
+
   return { data: result };
+}
+
+/**
+ * Extracts the full-size landscape event photo from a Meetup page.
+ *
+ * Meetup's og:image and JSON-LD "image" array only expose square/small crops
+ * (e.g. classic-events/<id>/676x676.jpg), so Claude tends to pick those and the
+ * sides of the real photo get cut off. The full image the page actually displays
+ * lives in the embedded JS state as highres_<id>.<ext>. We grab that and rewrite
+ * it to a width-capped webp, matching what Meetup serves to the browser.
+ * @param {string} html - Raw page HTML
+ * @returns {string|null} Full image URL, or null if no highres photo is found
+ */
+function extractMeetupImage_(html) {
+  var m = html.match(/https:\/\/secure\.meetupstatic\.com\/photos\/[^"'\\ ]*?highres_\d+\.(?:jpe?g|png|webp)/i);
+  if (!m) return null;
+  return m[0].replace(/\.(?:jpe?g|png|webp)$/i, '.webp') + '?w=1080';
 }
 
 /**
