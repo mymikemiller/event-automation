@@ -80,29 +80,37 @@ After that, clicking **Connect** in the app will let you log in with your Facebo
 
 ## Deploy
 
-Push local code to Apps Script and create/update the web app deployment:
+The web app entry point is declared in `src/appsscript.json` (the `webapp`
+block: execute as the deploying user, access restricted to the owner). The
+stable `/exec` URL is tied to a fixed **deployment ID** — to keep that URL (and
+any bookmarks / the Facebook redirect URI) stable, always **redeploy that same
+deployment** rather than creating a new one.
+
+Use the deploy script:
 
 ```bash
-# Push all files in src/ to the bound Apps Script project
-clasp push
+./deploy.sh "optional description"
 ```
 
-That's it — `clasp push` deploys the code. The `/dev` URL immediately reflects the latest push.
+It runs `clasp push`, cuts a new immutable version, and redeploys the pinned
+deployment to it. The bookmarked URL never changes:
 
-To create or update the versioned web app (the `/exec` URL), open the editor once:
-
-```bash
-clasp open-script
+```
+https://script.google.com/a/macros/atxveg.org/s/AKfycbx_zs0uCLGSxxB3btHhF3ehvdM_3CL2BHK_P0SuCYyRh2FJ61dv21snaSwisHDCb7Fe/exec
 ```
 
-Then **Deploy → Manage deployments → New deployment** (first time) or **Edit → Deploy** (subsequent times).
-- Type: **Web app**
-- Execute as: **Me**
-- Who has access: **Anyone with Google account** (or restrict to your domain)
+> The `/a/macros/atxveg.org/` segment forces the correct Google account
+> (`mike.miller@atxveg.org`, the owner). With `access: MYSELF`, opening the plain
+> `/macros/` URL while signed into another account returns a misleading
+> "file does not exist" error.
 
-Copy the web app URL — that's what you open to use the app, and what you add as the Facebook Login redirect URI.
+> ⚠️ Do **not** run `clasp deploy` — it mints a *new* deployment ID and breaks
+> the bookmarked URL. For quick testing without versioning, `clasp push` updates
+> the `/dev` URL immediately (latest saved code, owner login required).
 
-> After any code change: just run `clasp push`. The versioned `/exec` URL won't update until you redeploy from the editor, but the `/dev` URL always runs the latest push.
+If you ever need to change *who* can access the app (e.g. `ANYONE` so the
+Facebook OAuth callback can reach `/exec`), edit the `access` value in
+`src/appsscript.json` and run `./deploy.sh`.
 
 ---
 
