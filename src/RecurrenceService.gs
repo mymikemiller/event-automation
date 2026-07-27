@@ -53,6 +53,24 @@ function test_modalTime() {
   Logger.log('test_modalTime: ALL PASSED');
 }
 
+function test_fitDailyWeekly() {
+  var weekly = fitRule_(['2026-08-10', '2026-08-17', '2026-08-24', '2026-08-31']);
+  if (weekly !== 'RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=4') throw new Error('weekly: ' + weekly);
+
+  var biweekly = fitRule_(['2026-08-10', '2026-08-24', '2026-09-07']);
+  if (biweekly !== 'RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO;COUNT=3') throw new Error('biweekly: ' + biweekly);
+
+  var daily = fitRule_(['2026-08-10', '2026-08-11', '2026-08-12']);
+  if (daily !== 'RRULE:FREQ=DAILY;COUNT=3') throw new Error('daily: ' + daily);
+
+  var everyOther = fitRule_(['2026-08-10', '2026-08-12', '2026-08-14']);
+  if (everyOther !== 'RRULE:FREQ=DAILY;INTERVAL=2;COUNT=3') throw new Error('every other day: ' + everyOther);
+
+  if (fitRule_(['2026-08-10', '2026-08-17', '2026-09-03']) !== null) throw new Error('irregular must not fit');
+
+  Logger.log('test_fitDailyWeekly: ALL PASSED');
+}
+
 var DOW_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 var MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -149,3 +167,44 @@ function modalTime_(occ) {
   });
   return { start_time: best.start_time, end_time: best.end_time };
 }
+
+/**
+ * Tries each supported pattern in order and returns an RRULE line, or null.
+ * Callers MUST verify the result with expandRule_ before using it.
+ * @param {Array<string>} dates - sorted YYYY-MM-DD, length >= 2
+ * @returns {string|null}
+ */
+function fitRule_(dates) {
+  return fitDaily_(dates) ||
+         fitWeekly_(dates) ||
+         fitMonthlyByDate_(dates) ||
+         fitMonthlyByWeekday_(dates);
+}
+
+/** The common gap in days, or 0 if the gaps are not all equal. */
+function equalGaps_(dates) {
+  var g = daysBetween_(dates[0], dates[1]);
+  if (g <= 0) return 0;
+  for (var i = 1; i < dates.length - 1; i++) {
+    if (daysBetween_(dates[i], dates[i + 1]) !== g) return 0;
+  }
+  return g;
+}
+
+function fitDaily_(dates) {
+  var g = equalGaps_(dates);
+  if (!g || g > 6) return null;
+  return 'RRULE:FREQ=DAILY' + (g > 1 ? ';INTERVAL=' + g : '') + ';COUNT=' + dates.length;
+}
+
+function fitWeekly_(dates) {
+  var g = equalGaps_(dates);
+  if (!g || g % 7 !== 0) return null;
+  var weeks = g / 7;
+  return 'RRULE:FREQ=WEEKLY' + (weeks > 1 ? ';INTERVAL=' + weeks : '') +
+         ';BYDAY=' + DOW_CODES[dowOf_(dates[0])] + ';COUNT=' + dates.length;
+}
+
+// Filled in by the monthly-fitting task; stubs keep fitRule_ resolvable.
+function fitMonthlyByDate_(dates) { return null; }
+function fitMonthlyByWeekday_(dates) { return null; }
