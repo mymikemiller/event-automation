@@ -73,20 +73,6 @@ function createCalendarEvent(eventData) {
 }
 
 /**
- * Adds hours to an HH:MM string, wrapping past midnight.
- * @param {string} timeStr - HH:MM
- * @param {number} hours
- * @returns {string} HH:MM
- */
-function addHours_(timeStr, hours) {
-  var parts = timeStr.split(':');
-  var totalMinutes = parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10) + hours * 60;
-  var h = Math.floor(totalMinutes / 60) % 24;
-  var m = totalMinutes % 60;
-  return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
-}
-
-/**
  * Attaches a Drive file to a Calendar event using the Advanced Calendar Service.
  * @param {string} eventId  - Calendar API event ID (from Calendar.Events.insert)
  * @param {string} fileId   - Drive file ID
