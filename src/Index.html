@@ -24,13 +24,6 @@
     .login-wall-notice { background: #fff3e0; border: 1px solid #ff9800; border-radius: 6px; padding: 12px 14px; margin-bottom: 14px; font-size: 0.88rem; color: #5d3a00; }
     .login-wall-notice strong { display: block; margin-bottom: 4px; font-size: 0.95rem; color: #e65100; }
     .login-wall-notice a { color: #1a73e8; font-weight: 600; }
-    .fb-bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: #f0f4ff; border: 1px solid #c5d3f0; border-radius: 6px; margin-bottom: 14px; font-size: 0.85rem; }
-    .fb-bar .fb-icon { font-weight: 700; color: #1877f2; flex-shrink: 0; }
-    .fb-bar .fb-label { flex: 1; color: #444; }
-    .fb-bar .fb-label.connected { color: #137333; }
-    .fb-bar button { border: none; border-radius: 4px; padding: 5px 10px; font-size: 0.8rem; font-weight: 600; cursor: pointer; }
-    .fb-btn-connect { background: #1877f2; color: white; }
-    .fb-btn-disconnect { background: #e8eaed; color: #555; }
     .field-group { margin-bottom: 12px; }
     .warning-note { font-size: 0.8rem; color: #b06000; margin-top: 4px; }
     #url-section, #confirm-section, #result-section { display: none; }
@@ -55,26 +48,6 @@
 
   <!-- Step 1: URL Input -->
   <div id="url-section" class="card">
-    <!-- Facebook connection status bar -->
-    <div class="fb-bar" id="fb-bar" style="display:none">
-      <span class="fb-icon">f</span>
-      <span class="fb-label" id="fb-label">Checking...</span>
-      <button id="fb-btn" onclick="handleFbButtonClick()">...</button>
-    </div>
-    <!-- Manual token fallback (shown if OAuth popup is blocked or fails) -->
-    <div id="fb-token-panel" style="display:none;margin-bottom:12px;padding:12px;background:#f0f4ff;border:1px solid #c5d3f0;border-radius:6px;font-size:0.85rem">
-      <div style="margin-bottom:6px;color:#444">
-        Alternatively, get a token from
-        <a href="https://developers.facebook.com/tools/explorer/" target="_blank" style="color:#1877f2;font-weight:600">Graph API Explorer</a>
-        → select your app → click <b>Generate Access Token</b> → paste it below.
-      </div>
-      <input type="text" id="fb-token-input" placeholder="Paste access token here..." style="margin-bottom:6px;font-size:0.82rem">
-      <div style="display:flex;gap:6px;margin-top:2px">
-        <button onclick="saveFbToken()" style="flex:1;margin:0;padding:7px;font-size:0.85rem;background:#1877f2;color:white;border:none;border-radius:4px;cursor:pointer;font-weight:600">Save Token</button>
-        <button onclick="hideFbTokenPanel()" style="flex:0 0 auto;margin:0;padding:7px 12px;font-size:0.85rem;background:#e8eaed;color:#555;border:none;border-radius:4px;cursor:pointer;font-weight:600">Cancel</button>
-      </div>
-      <div id="fb-token-status" style="margin-top:6px;font-size:0.82rem;color:#c5221f"></div>
-    </div>
     <div class="field-group">
       <label for="url-input">Event Page URL</label>
       <input type="url" id="url-input" placeholder="https://..." autocomplete="off">
@@ -89,7 +62,7 @@
     <div class="card">
       <div class="field-group">
         <label for="paste-input">Paste the event post content</label>
-        <textarea id="paste-input" style="min-height:180px" placeholder="Log in to Facebook in your browser, open the post, select all the text, and paste it here..."></textarea>
+        <textarea id="paste-input" style="min-height:180px" placeholder="Open the event in your browser, close the login popup, select the event text, and paste it here..."></textarea>
       </div>
       <div id="paste-status"></div>
       <button class="btn-primary" id="paste-btn" onclick="extractFromPasted()">Extract Event Info</button>
@@ -147,118 +120,6 @@
     var WEB_APP_URL = '<?= webAppUrl ?>';
 
     var sourceUrl = '';
-    var fbConnected = false;
-
-    // ── Facebook ──────────────────────────────────────────────────────────────
-
-    function checkFacebookStatus() {
-      google.script.run
-        .withSuccessHandler(function(status) {
-          fbConnected = status.connected;
-          updateFbBar(status);
-        })
-        .withFailureHandler(function() {})
-        .getFacebookStatus();
-    }
-
-    function updateFbBar(status) {
-      var bar = document.getElementById('fb-bar');
-      var label = document.getElementById('fb-label');
-      var btn = document.getElementById('fb-btn');
-      bar.style.display = 'flex';
-      if (status.connected) {
-        label.textContent = 'Facebook: Connected as ' + status.name;
-        label.className = 'fb-label connected';
-        btn.textContent = 'Disconnect';
-        btn.className = 'fb-btn-disconnect';
-        hideFbTokenPanel();
-      } else {
-        label.textContent = 'Facebook: Not connected (needed for private/group events)';
-        label.className = 'fb-label';
-        btn.textContent = 'Connect';
-        btn.className = 'fb-btn-connect';
-      }
-    }
-
-    function handleFbButtonClick() {
-      if (fbConnected) {
-        google.script.run
-          .withSuccessHandler(function() {
-            fbConnected = false;
-            updateFbBar({ connected: false });
-          })
-          .withFailureHandler(function(err) { alert('Error: ' + err.message); })
-          .disconnectFacebook();
-      } else {
-        startFacebookOAuth();
-      }
-    }
-
-    function startFacebookOAuth() {
-      google.script.run
-        .withSuccessHandler(function(result) {
-          if (result.error) {
-            setStatus('url-status', 'error', result.error);
-            return;
-          }
-          var popup = window.open(result.authUrl, 'fb_oauth',
-            'width=600,height=700,left=' + Math.round((screen.width - 600) / 2) +
-            ',top=' + Math.round((screen.height - 700) / 2));
-          if (!popup) {
-            setStatus('url-status', 'warn', 'Popup was blocked. Allow popups for this site and try again, or use "paste a token" below.');
-            showFbTokenPanel();
-          }
-        })
-        .withFailureHandler(function(err) { setStatus('url-status', 'error', err.message); })
-        .getFacebookAuthUrl(WEB_APP_URL);
-    }
-
-    // Receive result from OAuth popup
-    window.addEventListener('message', function(event) {
-      if (event.data && event.data.oauthSuccess) {
-        fbConnected = true;
-        clearStatus('url-status');
-        updateFbBar({ connected: true, name: event.data.name });
-      } else if (event.data && event.data.oauthError && event.data.oauthError !== 'access_denied') {
-        setStatus('url-status', 'error', 'Facebook login failed: ' + event.data.oauthError);
-      }
-    });
-
-    function showFbTokenPanel() {
-      document.getElementById('fb-token-panel').style.display = 'block';
-      document.getElementById('fb-token-input').focus();
-    }
-
-    function hideFbTokenPanel() {
-      document.getElementById('fb-token-panel').style.display = 'none';
-      document.getElementById('fb-token-input').value = '';
-      document.getElementById('fb-token-status').textContent = '';
-    }
-
-    function saveFbToken() {
-      var token = document.getElementById('fb-token-input').value.trim();
-      if (!token) return;
-      var statusEl = document.getElementById('fb-token-status');
-      statusEl.style.color = '#555';
-      statusEl.textContent = 'Validating...';
-      google.script.run
-        .withSuccessHandler(function(result) {
-          if (result.error) {
-            statusEl.style.color = '#c5221f';
-            statusEl.textContent = result.error;
-            return;
-          }
-          var msg = 'Connected as ' + result.name;
-          if (result.extended) msg += ' (token extended to ~60 days)';
-          fbConnected = true;
-          updateFbBar({ connected: true, name: result.name });
-        })
-        .withFailureHandler(function(err) {
-          statusEl.style.color = '#c5221f';
-          statusEl.textContent = 'Error: ' + err.message;
-        })
-        .saveFacebookToken(token);
-    }
 
     // ── Utilities ─────────────────────────────────────────────────────────────
 
@@ -290,8 +151,8 @@
             setStatus('url-status', 'error', result.error);
             return;
           }
-          if (result.loginRequired) {
-            showPasteSection(result.platform, result.creatorUrl, result.originalUrl);
+          if (result.allowPaste) {
+            showPasteSection(result.error, result.originalUrl);
             return;
           }
           populateForm(result.data);
@@ -303,14 +164,13 @@
         .processEventUrl(url);
     }
 
-    function showPasteSection(platform, creatorUrl, originalUrl) {
-      var contactLink = creatorUrl
-        ? '<a href="' + creatorUrl + '" target="_blank">open the ' + platform + ' page</a>'
-        : '<a href="' + originalUrl + '" target="_blank">open the original page</a>';
+    function showPasteSection(message, originalUrl) {
+      var link = originalUrl
+        ? ' <a href="' + originalUrl + '" target="_blank">Open the original page</a>, close any popup, copy the event text, and paste it below.'
+        : '';
       document.getElementById('paste-login-notice').innerHTML =
-        '<strong>&#9888; This page requires a ' + platform + ' login</strong>' +
-        'Log in to ' + platform + ' in your browser, ' + contactLink + ', copy all the event text, and paste it below. ' +
-        'Before adding the event publicly, contact the creator to ask permission.';
+        '<strong>&#9888; Could not read that page automatically</strong>' +
+        message + link;
       hide('url-section');
       show('paste-section');
       document.getElementById('paste-input').focus();
@@ -604,9 +464,6 @@
       hide('result-section');
       show('url-section');
     }
-
-    // Check Facebook status on load
-    checkFacebookStatus();
   </script>
 </body>
 </html>

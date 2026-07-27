@@ -116,7 +116,7 @@ Rules:
 - If JSON-LD structured data is present (marked with === STRUCTURED EVENT DATA ===), use it as the authoritative source for date, start_time, and end_time.
 - For end_time: only guess if it is truly not stated anywhere on the page (including structured data and iCal). If you guess, always set end_time_note. Typical durations: networking dinner → 2-3h, workshop → 3h, coffee meetup → 1.5h.
 - For source_link_label: infer from the URL domain if possible.
-- For description: copy ALL body text word-for-word. Do NOT summarize or truncate. Preserve bold/italic/links/lists using only <b>, <i>, <ul>, <li>, <a href>, <br>. Strip all other HTML tags.
+- For description: you are COPYING, not writing. Reproduce the page's description text EXACTLY as written, word for word. Never summarize, shorten, paraphrase, reword, rephrase or "improve" it, and never add wording of your own. Preserve every paragraph and list item. Reproduce URLs in full — never truncate one or replace part of it with an ellipsis, and never link to a shortened or redirect form of it. Preserve bold/italic/links/lists using only <b>, <i>, <ul>, <li>, <a href>, <br>. Strip all other HTML tags.
 - Dates must be YYYY-MM-DD. Times must be HH:MM (24h).
 - For dates where the year is not explicitly stated: use the nearest future occurrence relative to today. Never infer a date in the past.
 - occurrences: list EVERY date the page states this event happens on. A normal single-date event returns an array of exactly one entry. The top-level date/start_time/end_time must always mirror occurrences[0].
@@ -132,23 +132,34 @@ Rules:
  * @returns {{data: Object}|{error: string}}
  */
 function extractEventData(url) {
-  // Facebook event pages are heavily JS-rendered — the HTML GAS fetches
-  // server-side is mostly empty. Use the Graph API Events endpoint instead,
-  // which works for public events using just app credentials (no user login).
+  // Facebook server-renders the event into the page HTML for logged-out
+  // visitors — the "See more on Facebook" dialog is only a client-side overlay
+  // drawn on top of it. See FacebookService.gs and
+  // docs/plans/2026-07-27-facebook-no-login-plan.md.
   if (url.indexOf('facebook.com/events/') >= 0) {
-    var fbEvent = fetchFacebookEventViaApi_(url);
-    if (fbEvent && !fbEvent.apiError) {
-      var content = formatFacebookEventForClaude_(fbEvent, url);
-      var result = callClaude_(content, false);
-      if (result === null) result = callClaude_(content, true);
-      if (result) {
-        if (!result.image_url && fbEvent.cover && fbEvent.cover.source) {
-          result.image_url = fbEvent.cover.source;
-        }
-        return { data: result };
+    var fbHtml = fetchFacebookEventPage_(url);
+    var fbEvent = fbHtml ? parseFacebookEvent_(fbHtml) : null;
+
+    if (fbEvent) {
+      var fbContent = formatFacebookEventForClaude_(fbEvent, url);
+      var fbResult = callClaude_(fbContent, false);
+      if (fbResult === null) fbResult = callClaude_(fbContent, true);
+
+      if (fbResult) {
+        // Facebook gives us the exact text, so the description is copied
+        // through verbatim rather than being rewritten by the model.
+        if (fbEvent.descriptionHtml) fbResult.description = fbEvent.descriptionHtml;
+        if (fbEvent.imageUrl) fbResult.image_url = fbEvent.imageUrl;
+        if (fbEvent.location && !fbResult.location) fbResult.location = fbEvent.location;
+        return { data: fbResult };
       }
     }
-    // Fall through to HTML extraction if API unavailable (no credentials)
+
+    return {
+      error: 'Could not read this Facebook event automatically — Facebook may have changed its page format.',
+      allowPaste: true,
+      originalUrl: url
+    };
   }
 
   var html;
@@ -161,25 +172,6 @@ function extractEventData(url) {
     html = response.getContentText();
   } catch (e) {
     return { error: 'Could not reach the URL: ' + e.message };
-  }
-
-  var loginWall = detectLoginWall_(html, url);
-  if (loginWall) {
-    // If we're authenticated with Facebook, try the Graph API before giving up
-    if (loginWall.platform === 'Facebook') {
-      var fbPost = fetchFacebookPostContent_(url);
-      if (fbPost && !fbPost.apiError) {
-        var result = callClaude_(fbPost.text, false);
-        if (result === null) result = callClaude_(fbPost.text, true);
-        if (result) {
-          if (!result.image_url && fbPost.imageUrl) result.image_url = fbPost.imageUrl;
-          return { data: result };
-        }
-      } else if (fbPost && fbPost.apiError) {
-        loginWall.apiError = fbPost.apiError;
-      }
-    }
-    return loginWall;
   }
 
   // Extract JSON-LD structured data before stripping scripts — event sites like Luma
@@ -281,42 +273,6 @@ function extractMeetupSeries_(html) {
   var m = html.match(/"series"\s*:\s*\{[^}]*?"description"\s*:\s*"((?:[^"\\]|\\.)*)"/);
   if (!m) return null;
   return m[1].replace(/\\"/g, '"').replace(/\\n/g, ' ').trim() || null;
-}
-
-/**
- * Detects if the fetched page is a login wall rather than actual event content.
- * Returns a loginRequired result object, or null if no wall detected.
- * @param {string} html - Raw page HTML
- * @param {string} url - Original URL
- * @returns {{loginRequired: true, platform: string, creatorUrl: string|null}|null}
- */
-function detectLoginWall_(html, url) {
-  if (url.indexOf('facebook.com') >= 0) {
-    var t = html.toLowerCase();
-
-    // Only flag pages where the response IS the login page, not pages that
-    // merely include login UI in their header/footer (which is all of Facebook).
-    // Reliable signals: the page <title> is login-related, or the actual login
-    // form fields (email + password) are the primary page content.
-    var isFbLoginWall =
-      t.indexOf('<title>log in to facebook') >= 0 ||
-      t.indexOf('<title>facebook – log in') >= 0 ||
-      t.indexOf('<title>facebook - log in') >= 0 ||
-      t.indexOf('<title>facebook — log in') >= 0 ||
-      (html.indexOf('id="login_form"') >= 0 &&
-       html.indexOf('name="email"') >= 0 &&
-       html.indexOf('name="pass"') >= 0);
-
-    if (isFbLoginWall) {
-      var groupMatch = url.match(/facebook\.com\/groups\/([^\/\?#]+)/);
-      var creatorUrl = groupMatch
-        ? 'https://www.facebook.com/groups/' + groupMatch[1] + '/'
-        : url;
-      return { loginRequired: true, platform: 'Facebook', creatorUrl: creatorUrl, originalUrl: url };
-    }
-  }
-
-  return null;
 }
 
 /**
