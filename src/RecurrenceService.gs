@@ -17,6 +17,68 @@ function test_normalizeOccurrences() {
   Logger.log('test_normalizeOccurrences: ALL PASSED');
 }
 
+function test_dateHelpers() {
+  if (daysBetween_('2026-08-10', '2026-08-17') !== 7) throw new Error('daysBetween_ weekly');
+  if (daysBetween_('2026-03-07', '2026-03-09') !== 2) throw new Error('daysBetween_ across DST start');
+  if (dowOf_('2026-08-10') !== 1) throw new Error('Aug 10 2026 should be Monday');
+  if (ymd_(dateUtc_('2026-08-10') + 7 * 86400000) !== '2026-08-17') throw new Error('ymd_ roundtrip');
+  if (monthIndex_('2026-01-01') !== monthIndex_('2025-12-01') + 1) throw new Error('monthIndex_ year wrap');
+  if (ordinalInMonth_('2026-08-11') !== 2) throw new Error('Aug 11 is the 2nd Tuesday');
+  if (exactDayOfMonth_(2026, 1, 31) !== null) throw new Error('Feb 31 must be null, not rolled over');
+  if (nthWeekdayOfMonth_(2026, 7, 2, 2) !== '2026-08-11') throw new Error('2nd Tuesday of Aug 2026');
+  Logger.log('test_dateHelpers: ALL PASSED');
+}
+
+var DOW_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+var MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+var DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+var DAY_NAMES_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday',
+                      'Thursday', 'Friday', 'Saturday'];
+
+function pad2_(n) { return (n < 10 ? '0' : '') + n; }
+
+/** YYYY-MM-DD → UTC epoch ms at midnight. */
+function dateUtc_(s) {
+  var p = s.split('-');
+  return Date.UTC(+p[0], +p[1] - 1, +p[2]);
+}
+
+/** UTC epoch ms → YYYY-MM-DD. */
+function ymd_(ms) {
+  var d = new Date(ms);
+  return d.getUTCFullYear() + '-' + pad2_(d.getUTCMonth() + 1) + '-' + pad2_(d.getUTCDate());
+}
+
+function daysBetween_(a, b) { return Math.round((dateUtc_(b) - dateUtc_(a)) / 86400000); }
+function dowOf_(s) { return new Date(dateUtc_(s)).getUTCDay(); }
+function dayOfMonth_(s) { return +s.split('-')[2]; }
+
+/** Absolute month number, so month deltas work across year boundaries. */
+function monthIndex_(s) {
+  var p = s.split('-');
+  return (+p[0]) * 12 + (+p[1] - 1);
+}
+
+/** Which nth-weekday-of-month this date is (Aug 11 2026 → 2, the 2nd Tuesday). */
+function ordinalInMonth_(s) { return Math.ceil(dayOfMonth_(s) / 7); }
+
+/**
+ * Builds YYYY-MM-DD, or null if that day does not exist in that month.
+ * Guards the Feb-31 case: Date.UTC would silently roll into March.
+ */
+function exactDayOfMonth_(y, m, dom) {
+  var d = new Date(Date.UTC(y, m, dom));
+  if (d.getUTCMonth() !== ((m % 12) + 12) % 12) return null;
+  return ymd_(d.getTime());
+}
+
+/** The ord-th `dow` of month m, or null if the month has no such day. */
+function nthWeekdayOfMonth_(y, m, ord, dow) {
+  var first = new Date(Date.UTC(y, m, 1)).getUTCDay();
+  return exactDayOfMonth_(y, m, 1 + ((dow - first + 7) % 7) + (ord - 1) * 7);
+}
+
 /**
  * Cleans an occurrence list: drops malformed entries, dedupes by date,
  * sorts ascending, and fills a missing end time with start + 2h (matching
