@@ -40,36 +40,72 @@ function test_duplicateDetection() {
 }
 
 /**
- * Creates a Google Calendar event using the Advanced Calendar Service.
+ * Creates a Google Calendar event from one or more occurrences.
+ *
+ * Prefers a single repeating event (RRULE, or RDATE for irregular dates) so the
+ * description and flyer live in one place. Occurrences whose time differs from
+ * the series are patched individually afterwards. Falls back to N duplicated
+ * events only if the recurring insert fails.
+ *
  * Passing timeZone explicitly ensures DST is handled correctly by the API.
- * @param {Object} eventData - Fields: title, date, start_time, end_time, location, description
- * @returns {{eventId: string, eventUrl: string}|{error: string}}
+ * @param {Object} eventData - title, occurrences[], location, description.
+ *   Legacy date/start_time/end_time fields are still accepted.
+ * @returns {{eventId:string, eventIds:Array<string>, eventUrl:string,
+ *            method:string, occurrenceCount:number, warnings:Array<string>}
+ *          |{error:string}}
  */
 function createCalendarEvent(eventData) {
   try {
     var calendarId = PropertiesService.getScriptProperties().getProperty('CALENDAR_ID');
     var tz = Session.getScriptTimeZone();
 
-    var endTime = (eventData.end_time && eventData.end_time !== eventData.start_time)
-                  ? eventData.end_time
-                  : addHours_(eventData.start_time, 2);
+    var occurrences = (eventData.occurrences && eventData.occurrences.length)
+      ? eventData.occurrences
+      : [{ date: eventData.date, start_time: eventData.start_time, end_time: eventData.end_time }];
 
-    var resource = {
-      summary: eventData.title,
-      start: { dateTime: eventData.date + 'T' + eventData.start_time + ':00', timeZone: tz },
-      end:   { dateTime: eventData.date + 'T' + endTime + ':00', timeZone: tz },
-      description: eventData.description || ''
-    };
-    if (eventData.location) resource.location = eventData.location;
+    var plan = planRecurrence_(occurrences, tz);
+    if (plan.method === 'none') return { error: 'No valid dates to create.' };
 
-    var event = Calendar.Events.insert(resource, calendarId);
-    return {
-      eventId: event.id,
-      eventUrl: event.htmlLink
-    };
+    var warnings = [];
+
+    try {
+      var resource = buildEventResource_(eventData, plan.base, tz);
+      if (plan.recurrence) resource.recurrence = plan.recurrence;
+
+      var event = Calendar.Events.insert(resource, calendarId);
+
+      if (plan.exceptions.length) {
+        warnings = warnings.concat(patchExceptions_(calendarId, event.id, plan, tz));
+      }
+
+      return {
+        eventId: event.id,
+        eventIds: [event.id],
+        eventUrl: event.htmlLink,
+        method: plan.method,
+        occurrenceCount: plan.dates.length,
+        warnings: warnings
+      };
+    } catch (recurErr) {
+      // A single-date insert failing is a real error, not something duplication fixes.
+      if (plan.method === 'single') throw recurErr;
+      return duplicateEvents_(eventData, plan, calendarId, tz, recurErr.message);
+    }
   } catch (e) {
     return { error: 'Failed to create calendar event: ' + e.message };
   }
+}
+
+/** Shared resource builder so the recurring and duplicated paths cannot drift. */
+function buildEventResource_(eventData, occ, tz) {
+  var resource = {
+    summary: eventData.title,
+    start: { dateTime: occ.date + 'T' + occ.start_time + ':00', timeZone: tz },
+    end:   { dateTime: occ.date + 'T' + occ.end_time + ':00', timeZone: tz },
+    description: eventData.description || ''
+  };
+  if (eventData.location) resource.location = eventData.location;
+  return resource;
 }
 
 /**
