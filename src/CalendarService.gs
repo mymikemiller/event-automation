@@ -204,8 +204,14 @@ function createCalendarEvent(eventData) {
  */
 function patchExceptions_(calendarId, eventId, plan, tz) {
   var warnings = [];
-  var first = plan.dates[0].date;
-  var last = plan.dates[plan.dates.length - 1].date;
+
+  // The query bounds are absolute instants (Z), but our dates are LOCAL calendar
+  // dates. A 7pm event in Chicago starts at 00:00 UTC the NEXT day, so a window
+  // ending at <last>T23:59:59Z silently excludes the final occurrence. Pad by a
+  // day on each side — 24h exceeds the largest UTC offset in use (±14h) — and
+  // let the date-prefix match below do the real selecting.
+  var first = ymd_(dateUtc_(plan.dates[0].date) - 86400000);
+  var last = ymd_(dateUtc_(plan.dates[plan.dates.length - 1].date) + 86400000);
 
   var instances;
   try {
