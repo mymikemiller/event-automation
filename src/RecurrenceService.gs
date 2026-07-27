@@ -111,6 +111,116 @@ function test_expandRule() {
   Logger.log('test_expandRule: ALL PASSED');
 }
 
+function test_planRecurrence_single() {
+  var plan = planRecurrence_([{ date: '2026-08-10', start_time: '19:00', end_time: '20:00' }], 'America/Chicago');
+  if (plan.method !== 'single') throw new Error('method: ' + plan.method);
+  if (plan.recurrence !== null) throw new Error('single events must not carry a recurrence');
+  if (plan.exceptions.length !== 0) throw new Error('single events have no exceptions');
+  Logger.log('test_planRecurrence_single: ALL PASSED');
+}
+
+function test_planRecurrence_weekly() {
+  // The real Meetup case: Vegan Book Club, Aug 10/17/24/31 2026, 7-8pm.
+  var plan = planRecurrence_([
+    { date: '2026-08-10', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-17', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-24', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-31', start_time: '19:00', end_time: '20:00' }
+  ], 'America/Chicago');
+
+  if (plan.method !== 'rrule') throw new Error('method: ' + plan.method);
+  if (plan.recurrence[0] !== 'RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=4') throw new Error('rule: ' + plan.recurrence[0]);
+  if (plan.base.date !== '2026-08-10') throw new Error('base date: ' + plan.base.date);
+  if (plan.exceptions.length !== 0) throw new Error('no exceptions expected');
+  Logger.log('test_planRecurrence_weekly: ALL PASSED');
+}
+
+function test_planRecurrence_weeklyTimeException() {
+  var plan = planRecurrence_([
+    { date: '2026-08-10', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-17', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-24', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-31', start_time: '18:00', end_time: '20:00' }
+  ], 'America/Chicago');
+
+  if (plan.method !== 'rrule') throw new Error('a differing time must not break the series');
+  if (plan.base.start_time !== '19:00') throw new Error('series time should be the modal 19:00');
+  if (plan.exceptions.length !== 1) throw new Error('expected 1 exception, got ' + plan.exceptions.length);
+  if (plan.exceptions[0].date !== '2026-08-31') throw new Error('wrong exception date');
+  if (plan.dates[3].isException !== true) throw new Error('UI row should be flagged');
+  Logger.log('test_planRecurrence_weeklyTimeException: ALL PASSED');
+}
+
+function test_planRecurrence_irregular() {
+  var plan = planRecurrence_([
+    { date: '2026-08-10', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-17', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-09-03', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-09-20', start_time: '19:00', end_time: '20:00' }
+  ], 'America/Chicago');
+
+  if (plan.method !== 'rdate') throw new Error('method: ' + plan.method);
+  // DTSTART is instance 1 per RFC 5545, so RDATE lists dates 2..n only.
+  var expected = 'RDATE;TZID=America/Chicago:20260817T190000,20260903T190000,20260920T190000';
+  if (plan.recurrence[0] !== expected) throw new Error('rdate: ' + plan.recurrence[0]);
+  Logger.log('test_planRecurrence_irregular: ALL PASSED');
+}
+
+function test_planRecurrence_endOfMonthDates() {
+  // "Last day of the month" is NOT a fixed day-of-month (31, 28, 31), so no
+  // rule fits and these must go out as an explicit date list.
+  var plan = planRecurrence_([
+    { date: '2026-01-31', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-02-28', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-03-31', start_time: '19:00', end_time: '20:00' }
+  ], 'America/Chicago');
+  if (plan.method !== 'rdate') throw new Error('expected rdate, got ' + plan.method);
+  if (plan.dates.length !== 3) throw new Error('all three dates must survive');
+  Logger.log('test_planRecurrence_endOfMonthDates: ALL PASSED');
+}
+
+function test_verifierRejectsUnfaithfulRule() {
+  // The fitters are exact by construction, so planRecurrence_ cannot currently
+  // reach this branch. It exists as a guard against a future fitter that is
+  // subtly wrong, so test the guard directly rather than through the planner.
+  var dates = ['2026-01-31', '2026-02-28', '2026-03-31'];
+  var wrong = 'RRULE:FREQ=MONTHLY;COUNT=3';
+  var expanded = expandRule_(wrong, dates[0], dates.length);
+
+  if (sameList_(expanded, dates)) {
+    throw new Error('a monthly rule must NOT reproduce end-of-month dates');
+  }
+  if (expanded.join(',') !== '2026-01-31,2026-03-31,2026-05-31') {
+    throw new Error('unexpected expansion: ' + expanded.join(','));
+  }
+  // And a faithful rule must be accepted, so the guard is not simply always-false.
+  var good = ['2026-08-10', '2026-08-17', '2026-08-24'];
+  if (!sameList_(expandRule_('RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=3', good[0], 3), good)) {
+    throw new Error('a correct rule must verify');
+  }
+  Logger.log('test_verifierRejectsUnfaithfulRule: ALL PASSED');
+}
+
+function test_planRecurrence_neverUsesUntil() {
+  var inputs = [
+    ['2026-08-10', '2026-08-17', '2026-08-24'],
+    ['2026-08-15', '2026-09-15', '2026-10-15'],
+    ['2026-08-11', '2026-09-08', '2026-10-13'],
+    ['2026-08-10', '2026-08-11', '2026-08-12']
+  ];
+  inputs.forEach(function (dates) {
+    var plan = planRecurrence_(dates.map(function (d) {
+      return { date: d, start_time: '19:00', end_time: '20:00' };
+    }), 'America/Chicago');
+    var line = plan.recurrence ? plan.recurrence[0] : '';
+    if (line.indexOf('UNTIL') >= 0) throw new Error('UNTIL leaked into: ' + line);
+    if (plan.method === 'rrule' && line.indexOf('COUNT=' + dates.length) < 0) {
+      throw new Error('rule must be pinned with COUNT=' + dates.length + ': ' + line);
+    }
+  });
+  Logger.log('test_planRecurrence_neverUsesUntil: ALL PASSED');
+}
+
 var DOW_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 var MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -330,3 +440,69 @@ function sameList_(a, b) {
   for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
 }
+
+/**
+ * Decides how to create a set of occurrences in Google Calendar.
+ *
+ * Rules always terminate with COUNT=n, never UNTIL, so the series covers
+ * exactly the dates extracted from the page with no DST or timezone ambiguity
+ * about where it stops. A fitted rule is used only if expandRule_ reproduces
+ * the input dates exactly; otherwise the dates go out as an explicit RDATE
+ * list, which keeps even an irregular set as a single repeating event.
+ *
+ * @param {Array} occurrences - [{date, start_time, end_time}]
+ * @param {string} tz - IANA timezone, e.g. 'America/Chicago'
+ * @returns {{method:string, summary:string, base:Object|null,
+ *            recurrence:Array<string>|null, exceptions:Array, dates:Array}}
+ */
+function planRecurrence_(occurrences, tz) {
+  var occ = normalizeOccurrences_(occurrences);
+  if (occ.length === 0) {
+    return { method: 'none', summary: 'No valid dates yet.', base: null,
+             recurrence: null, exceptions: [], dates: [] };
+  }
+
+  var time = modalTime_(occ);
+  var isException = function (o) {
+    return o.start_time !== time.start_time || o.end_time !== time.end_time;
+  };
+  var uiDates = occ.map(function (o) {
+    return { date: o.date, start_time: o.start_time, end_time: o.end_time,
+             isException: isException(o) };
+  });
+
+  if (occ.length === 1) {
+    return { method: 'single', summary: summarizePlan_('single', occ, null),
+             base: occ[0], recurrence: null, exceptions: [], dates: uiDates };
+  }
+
+  var dates = occ.map(function (o) { return o.date; });
+  var base = { date: dates[0], start_time: time.start_time, end_time: time.end_time };
+  var exceptions = occ.filter(isException);
+
+  var rule = fitRule_(dates);
+  if (rule && !sameList_(expandRule_(rule, dates[0], dates.length), dates)) rule = null;
+
+  if (rule) {
+    return { method: 'rrule', summary: summarizePlan_('rrule', occ, rule), base: base,
+             recurrence: [rule], exceptions: exceptions, dates: uiDates };
+  }
+
+  return { method: 'rdate', summary: summarizePlan_('rdate', occ, null), base: base,
+           recurrence: [buildRdate_(dates.slice(1), time.start_time, tz)],
+           exceptions: exceptions, dates: uiDates };
+}
+
+/**
+ * RDATE line covering dates 2..n. DTSTART is already instance 1 per RFC 5545,
+ * so including the first date again would be redundant.
+ */
+function buildRdate_(dates, startTime, tz) {
+  var stamps = dates.map(function (d) {
+    return d.replace(/-/g, '') + 'T' + startTime.replace(':', '') + '00';
+  });
+  return 'RDATE;TZID=' + tz + ':' + stamps.join(',');
+}
+
+// Replaced with real copy by the summary task.
+function summarizePlan_(method, occ, rule) { return method; }
