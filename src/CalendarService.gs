@@ -96,6 +96,55 @@ function createCalendarEvent(eventData) {
   }
 }
 
+/**
+ * Applies per-date time overrides to individual instances of a recurring event.
+ *
+ * Instances are matched on the DATE portion of originalStartTime, because the
+ * series was created at the modal time and each exception's real time differs.
+ * A failure here is a warning, not an abort: the series already exists and is
+ * correct apart from that one instance.
+ * @returns {Array<string>} warnings
+ */
+function patchExceptions_(calendarId, eventId, plan, tz) {
+  var warnings = [];
+  var first = plan.dates[0].date;
+  var last = plan.dates[plan.dates.length - 1].date;
+
+  var instances;
+  try {
+    instances = Calendar.Events.instances(calendarId, eventId, {
+      timeMin: first + 'T00:00:00Z',
+      timeMax: last + 'T23:59:59Z',
+      maxResults: 250
+    }).items || [];
+  } catch (e) {
+    return ['Could not load event instances to adjust differing times: ' + e.message];
+  }
+
+  plan.exceptions.forEach(function (ex) {
+    var match = null;
+    for (var i = 0; i < instances.length; i++) {
+      var ost = instances[i].originalStartTime || instances[i].start || {};
+      var stamp = ost.dateTime || ost.date || '';
+      if (stamp.indexOf(ex.date) === 0) { match = instances[i]; break; }
+    }
+    if (!match) {
+      warnings.push('Could not find the ' + ex.date + ' occurrence to set its time.');
+      return;
+    }
+    try {
+      Calendar.Events.patch({
+        start: { dateTime: ex.date + 'T' + ex.start_time + ':00', timeZone: tz },
+        end:   { dateTime: ex.date + 'T' + ex.end_time + ':00', timeZone: tz }
+      }, calendarId, match.id);
+    } catch (e) {
+      warnings.push('Could not set the time for ' + ex.date + ': ' + e.message);
+    }
+  });
+
+  return warnings;
+}
+
 /** Shared resource builder so the recurring and duplicated paths cannot drift. */
 function buildEventResource_(eventData, occ, tz) {
   var resource = {
