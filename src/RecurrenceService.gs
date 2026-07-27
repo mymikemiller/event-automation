@@ -528,6 +528,20 @@ function planRecurrence_(occurrences, tz) {
 }
 
 /**
+ * Public wrapper called from the confirmation UI via google.script.run to
+ * refresh the recurrence banner. Server-side so the UI and the writer share
+ * one implementation and can never disagree.
+ *
+ * Must NOT end in an underscore — GAS will not expose such functions to
+ * google.script.run.
+ * @param {Array} occurrences - [{date, start_time, end_time}]
+ * @returns {Object} plan
+ */
+function planRecurrence(occurrences) {
+  return planRecurrence_(occurrences, Session.getScriptTimeZone());
+}
+
+/**
  * RDATE line covering dates 2..n. DTSTART is already instance 1 per RFC 5545,
  * so including the first date again would be redundant.
  */
