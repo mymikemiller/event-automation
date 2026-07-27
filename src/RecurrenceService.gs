@@ -71,6 +71,20 @@ function test_fitDailyWeekly() {
   Logger.log('test_fitDailyWeekly: ALL PASSED');
 }
 
+function test_fitMonthly() {
+  var byDate = fitRule_(['2026-08-15', '2026-09-15', '2026-10-15']);
+  if (byDate !== 'RRULE:FREQ=MONTHLY;COUNT=3') throw new Error('monthly by date: ' + byDate);
+
+  var quarterly = fitRule_(['2026-01-15', '2026-04-15', '2026-07-15']);
+  if (quarterly !== 'RRULE:FREQ=MONTHLY;INTERVAL=3;COUNT=3') throw new Error('quarterly: ' + quarterly);
+
+  // 2nd Tuesday of Aug/Sep/Oct 2026
+  var byWeekday = fitRule_(['2026-08-11', '2026-09-08', '2026-10-13']);
+  if (byWeekday !== 'RRULE:FREQ=MONTHLY;BYDAY=2TU;COUNT=3') throw new Error('2nd Tuesday: ' + byWeekday);
+
+  Logger.log('test_fitMonthly: ALL PASSED');
+}
+
 var DOW_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 var MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -205,6 +219,38 @@ function fitWeekly_(dates) {
          ';BYDAY=' + DOW_CODES[dowOf_(dates[0])] + ';COUNT=' + dates.length;
 }
 
-// Filled in by the monthly-fitting task; stubs keep fitRule_ resolvable.
-function fitMonthlyByDate_(dates) { return null; }
-function fitMonthlyByWeekday_(dates) { return null; }
+/** The common month step, or 0 if the steps are not all equal. */
+function equalMonthSteps_(dates) {
+  var k = monthIndex_(dates[1]) - monthIndex_(dates[0]);
+  if (k <= 0) return 0;
+  for (var i = 1; i < dates.length - 1; i++) {
+    if (monthIndex_(dates[i + 1]) - monthIndex_(dates[i]) !== k) return 0;
+  }
+  return k;
+}
+
+/** Same day-of-month every k months, e.g. the 15th. */
+function fitMonthlyByDate_(dates) {
+  var dom = dayOfMonth_(dates[0]);
+  for (var i = 1; i < dates.length; i++) {
+    if (dayOfMonth_(dates[i]) !== dom) return null;
+  }
+  var k = equalMonthSteps_(dates);
+  if (!k) return null;
+  return 'RRULE:FREQ=MONTHLY' + (k > 1 ? ';INTERVAL=' + k : '') + ';COUNT=' + dates.length;
+}
+
+/** Same weekday at the same ordinal every k months, e.g. the 2nd Tuesday. */
+function fitMonthlyByWeekday_(dates) {
+  var dow = dowOf_(dates[0]);
+  var ord = ordinalInMonth_(dates[0]);
+  // A 5th weekday does not exist in every month; let RDATE handle those.
+  if (ord > 4) return null;
+  for (var i = 1; i < dates.length; i++) {
+    if (dowOf_(dates[i]) !== dow || ordinalInMonth_(dates[i]) !== ord) return null;
+  }
+  var k = equalMonthSteps_(dates);
+  if (!k) return null;
+  return 'RRULE:FREQ=MONTHLY' + (k > 1 ? ';INTERVAL=' + k : '') +
+         ';BYDAY=' + ord + DOW_CODES[dow] + ';COUNT=' + dates.length;
+}
