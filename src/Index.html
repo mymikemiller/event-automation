@@ -38,6 +38,16 @@
     .field-row { display: flex; gap: 8px; }
     .field-row .field-group { flex: 1; }
     a.link-btn { display: block; text-align: center; padding: 10px; border-radius: 6px; background: #e8f0fe; color: #1a73e8; text-decoration: none; font-weight: 600; margin-top: 8px; }
+    .rec-banner { padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 0.86rem; background: #e8f0fe; color: #174ea6; border: 1px solid #c5d3f0; }
+    .rec-banner.checking { background: #f1f3f4; color: #777; border-color: #ddd; }
+    .rec-banner.single { background: #f1f3f4; color: #555; border-color: #ddd; }
+    .date-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+    .date-row input[type=date] { flex: 2 1 auto; min-width: 0; }
+    .date-row input[type=time] { flex: 1 1 auto; min-width: 0; }
+    .date-row .sep { color: #999; font-size: 0.85rem; }
+    .date-row .diff-tag { font-size: 0.65rem; font-weight: 700; color: #b06000; background: #fef7e0; border: 1px solid #f9c840; border-radius: 3px; padding: 1px 4px; white-space: nowrap; }
+    .date-row .rm { flex: 0 0 auto; background: none; border: none; color: #c5221f; font-size: 1rem; cursor: pointer; width: auto; margin: 0; padding: 0 4px; }
+    .btn-add-date { width: auto; padding: 6px 12px; font-size: 0.82rem; background: #e8f0fe; color: #1a73e8; margin-top: 2px; }
   </style>
 </head>
 <body>
@@ -95,22 +105,12 @@
         <label for="f-title">Title *</label>
         <input type="text" id="f-title">
       </div>
-      <div class="field-row">
-        <div class="field-group">
-          <label for="f-date">Date *</label>
-          <input type="date" id="f-date">
-        </div>
-      </div>
-      <div class="field-row">
-        <div class="field-group">
-          <label for="f-start">Start Time *</label>
-          <input type="time" id="f-start">
-        </div>
-        <div class="field-group">
-          <label for="f-end">End Time</label>
-          <input type="time" id="f-end">
-          <div id="end-time-note" class="warning-note"></div>
-        </div>
+      <div class="field-group">
+        <div id="recurrence-banner" class="rec-banner"></div>
+        <label>Dates *</label>
+        <div id="date-rows"></div>
+        <button type="button" class="btn-add-date" onclick="addDateRow()">+ Add date</button>
+        <div id="end-time-note" class="warning-note"></div>
       </div>
       <div class="field-group">
         <label for="f-location">Location</label>
@@ -335,11 +335,130 @@
         .processEventText(text, sourceUrl);
     }
 
+    // ── Date rows ─────────────────────────────────────────────────────────────
+
+    var planTimer = null;
+
+    function addDateRow(date, start, end) {
+      var rows = document.getElementById('date-rows');
+      // A new row defaults to one interval past the last, keeping the pattern.
+      if (!date && rows.children.length) {
+        var existing = readDateRows();
+        var last = existing[existing.length - 1];
+        var step = existing.length > 1
+          ? (Date.parse(last.date) - Date.parse(existing[existing.length - 2].date)) / 86400000
+          : 7;
+        date = new Date(Date.parse(last.date) + step * 86400000).toISOString().slice(0, 10);
+        // Inherit the SERIES time, not the last row's — the last row may itself
+        // be a one-off exception, and cloning it would silently create another.
+        var common = commonRowTime_(existing);
+        start = start || common.start_time;
+        end = end || common.end_time;
+      }
+
+      var row = document.createElement('div');
+      row.className = 'date-row';
+      row.innerHTML =
+        '<input type="date" value="' + (date || '') + '" oninput="onDatesChanged()">' +
+        '<input type="time" value="' + (start || '') + '" oninput="onDatesChanged()">' +
+        '<span class="sep">&ndash;</span>' +
+        '<input type="time" value="' + (end || '') + '" oninput="onDatesChanged()">' +
+        '<span class="diff-tag" style="display:none">diff</span>' +
+        '<button type="button" class="rm" onclick="removeDateRow(this)" title="Remove date">&#10005;</button>';
+      rows.appendChild(row);
+      onDatesChanged();
+    }
+
+    // Most common start/end among the current rows. Only used to pre-fill a new
+    // row; the server's planner remains the authority on the actual series time.
+    function commonRowTime_(rows) {
+      var counts = {};
+      rows.forEach(function (r) {
+        var k = r.start_time + '|' + r.end_time;
+        counts[k] = (counts[k] || 0) + 1;
+      });
+      var best = rows[0];
+      var bestN = 0;
+      rows.forEach(function (r) {
+        var n = counts[r.start_time + '|' + r.end_time];
+        if (n > bestN) { bestN = n; best = r; }
+      });
+      return { start_time: best.start_time, end_time: best.end_time };
+    }
+
+    function removeDateRow(btn) {
+      var rows = document.getElementById('date-rows');
+      if (rows.children.length <= 1) return;
+      rows.removeChild(btn.parentNode);
+      onDatesChanged();
+    }
+
+    function readDateRows() {
+      var out = [];
+      var rows = document.getElementById('date-rows').children;
+      for (var i = 0; i < rows.length; i++) {
+        var inputs = rows[i].getElementsByTagName('input');
+        out.push({ date: inputs[0].value, start_time: inputs[1].value, end_time: inputs[2].value || null });
+      }
+      return out;
+    }
+
+    function onDatesChanged() {
+      var rows = document.getElementById('date-rows').children;
+      // The remove control is meaningless on the only row.
+      for (var i = 0; i < rows.length; i++) {
+        rows[i].getElementsByClassName('rm')[0].style.visibility =
+          rows.length > 1 ? 'visible' : 'hidden';
+      }
+
+      var occ = readDateRows().filter(function (o) { return o.date && o.start_time; });
+      var banner = document.getElementById('recurrence-banner');
+      if (!occ.length) {
+        banner.className = 'rec-banner single';
+        banner.textContent = 'Add at least one date.';
+        return;
+      }
+
+      banner.className = 'rec-banner checking';
+      banner.textContent = 'Checking dates…';
+
+      clearTimeout(planTimer);
+      planTimer = setTimeout(function () {
+        google.script.run
+          .withSuccessHandler(renderPlan)
+          .withFailureHandler(function () {
+            banner.className = 'rec-banner single';
+            banner.textContent = 'Could not preview the schedule — it will still be checked when you submit.';
+          })
+          .planRecurrence(occ);
+      }, 400);
+    }
+
+    function renderPlan(plan) {
+      var banner = document.getElementById('recurrence-banner');
+      banner.className = 'rec-banner' + (plan.method === 'single' ? ' single' : '');
+      banner.textContent = (plan.method === 'single' ? '' : '↻ ') + plan.summary;
+
+      // Flag rows whose time differs from the series.
+      var rows = document.getElementById('date-rows').children;
+      var flagged = {};
+      (plan.dates || []).forEach(function (d) { if (d.isException) flagged[d.date] = true; });
+      for (var i = 0; i < rows.length; i++) {
+        var d = rows[i].getElementsByTagName('input')[0].value;
+        rows[i].getElementsByClassName('diff-tag')[0].style.display = flagged[d] ? 'inline' : 'none';
+      }
+    }
+
     function populateForm(data) {
       document.getElementById('f-title').value = data.title || '';
-      document.getElementById('f-date').value = data.date || '';
-      document.getElementById('f-start').value = data.start_time || '';
-      document.getElementById('f-end').value = data.end_time || '';
+
+      var rows = document.getElementById('date-rows');
+      rows.innerHTML = '';
+      var occ = (data.occurrences && data.occurrences.length)
+        ? data.occurrences
+        : [{ date: data.date, start_time: data.start_time, end_time: data.end_time }];
+      occ.forEach(function (o) { addDateRow(o.date || '', o.start_time || '', o.end_time || ''); });
+
       document.getElementById('f-location').value = data.location || '';
       document.getElementById('f-description').value = data.description || '';
       document.getElementById('f-link-label').value = data.source_link_label || 'See Website for details';
@@ -366,22 +485,32 @@
 
     function submitEvent() {
       var title = document.getElementById('f-title').value.trim();
-      var date = document.getElementById('f-date').value;
-      var startTime = document.getElementById('f-start').value;
+      var occurrences = readDateRows();
 
-      if (!title || !date || !startTime) {
-        setStatus('submit-status', 'error', 'Title, date, and start time are required.');
-        return;
+      if (!title) { setStatus('submit-status', 'error', 'Title is required.'); return; }
+      if (!occurrences.length) { setStatus('submit-status', 'error', 'Add at least one date.'); return; }
+
+      var seen = {};
+      for (var i = 0; i < occurrences.length; i++) {
+        if (!occurrences[i].date || !occurrences[i].start_time) {
+          setStatus('submit-status', 'error', 'Every date needs a date and a start time.');
+          return;
+        }
+        if (seen[occurrences[i].date]) {
+          setStatus('submit-status', 'error', 'Duplicate date: ' + occurrences[i].date);
+          return;
+        }
+        seen[occurrences[i].date] = true;
       }
 
       document.getElementById('submit-btn').disabled = true;
-      setStatus('submit-status', 'info', 'Creating calendar event and saving image...');
+      setStatus('submit-status', 'info', occurrences.length > 1
+        ? 'Creating calendar event for ' + occurrences.length + ' dates and saving image...'
+        : 'Creating calendar event and saving image...');
 
       var eventData = {
         title: title,
-        date: date,
-        start_time: startTime,
-        end_time: document.getElementById('f-end').value,
+        occurrences: occurrences,
         location: document.getElementById('f-location').value.trim(),
         description: document.getElementById('f-description').value.trim(),
         source_link_label: document.getElementById('f-link-label').value.trim(),
@@ -411,11 +540,21 @@
       hide('confirm-section');
       show('result-section');
 
-      var statusMsg = 'Event created successfully!';
+      var statusMsg = result.occurrenceCount > 1
+        ? (result.method === 'duplicate'
+            ? 'Created ' + result.occurrenceCount + ' separate events.'
+            : 'Created one repeating event with ' + result.occurrenceCount + ' occurrences.')
+        : 'Event created successfully!';
       var statusType = 'success';
 
-      if (result.duplicate) {
-        statusMsg = 'Event created. Note: an event with this title already existed on this date.';
+      if (result.duplicateDates && result.duplicateDates.length) {
+        statusMsg += ' Note: ' + result.duplicateDates.length + ' of ' + result.occurrenceCount +
+                     ' date(s) already had an event with this title (' +
+                     result.duplicateDates.join(', ') + ').';
+        statusType = 'warn';
+      }
+      if (result.warnings && result.warnings.length) {
+        statusMsg += ' ' + result.warnings.join(' ');
         statusType = 'warn';
       }
       if (result.attachmentWarning) {
@@ -454,6 +593,9 @@
       document.getElementById('url-input').value = '';
       document.getElementById('paste-input').value = '';
       document.getElementById('result-title').style.display = 'none';
+      document.getElementById('date-rows').innerHTML = '';
+      document.getElementById('recurrence-banner').textContent = '';
+      document.getElementById('recurrence-banner').className = 'rec-banner';
       sourceUrl = '';
       clearStatus('url-status');
       clearStatus('paste-status');

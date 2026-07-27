@@ -11,6 +11,30 @@ A Google Apps Script web app: paste an event URL, Claude AI extracts the details
 3. You review and edit the extracted fields, then confirm.
 4. The script saves the flyer image to a Drive folder, creates the Calendar event, and attaches the image.
 
+### Multi-date events
+
+If an event page lists several dates — a book club meeting four Mondays in a
+row, say — all of them are extracted. The confirmation screen shows every date
+with its own start and end time, each editable and removable, plus an **Add
+date** button. A banner above states exactly what will be created:
+
+- **Repeating** — dates that fit a pattern become one repeating calendar event
+  (`every week on Monday, 4 occurrences (Aug 10 – Aug 31)`).
+- **Repeating with a custom date list** — irregular dates still become a single
+  event, using an `RDATE` list rather than a rule.
+- **Separate events** — only as a fallback, if creating a repeating event fails.
+
+Because it stays one event, the description and flyer live in one place and a
+later edit applies to every date.
+
+Two details worth knowing:
+
+- Series are pinned with `COUNT`, never `UNTIL`, so only the dates found on the
+  page are ever created — no stray occurrences past the end.
+- If one date starts at a different time from the rest, that occurrence is
+  adjusted individually after the series is created, and its row is marked
+  `diff` on the confirmation screen.
+
 ---
 
 ## Prerequisites (one-time setup)
@@ -116,6 +140,25 @@ Facebook OAuth callback can reach `/exec`), edit the `access` value in
 
 ## Test
 
+### Locally (fast, no deploy)
+
+Pure logic runs under Node without touching Google at all:
+
+```bash
+node tests/run.js Extraction.gs RecurrenceService.gs Utilities.gs   # 19 tests
+node tests/calendar.test.js                                          # 5 tests
+```
+
+`tests/run.js` loads `.gs` files into a Node `vm` context with `Logger`/`Session`
+shims and runs their `test_*` functions, skipping anything named `*_live`.
+`tests/calendar.test.js` covers `CalendarService.gs` against a stub that filters
+instances by `timeMin`/`timeMax` the way the real API does — a permissive stub
+once hid a timezone bug that only appeared against live Google Calendar.
+
+`tests/` sits outside clasp's `rootDir`, so none of it is ever pushed.
+
+### In the Apps Script editor (anything touching Google)
+
 Google Apps Script doesn't have a test runner. Each test is a named function you run manually:
 
 1. If you get an `invalid_grant` auth error, re-authenticate first: `clasp login`
@@ -132,6 +175,11 @@ Available test functions:
 | `test_extractEventData_live` | Extraction.gs | Full extraction against a real URL (edit the URL in the function first) |
 | `test_createAndDeleteEvent` | CalendarService.gs | Calendar event creation and cleanup |
 | `test_duplicateDetection` | CalendarService.gs | Duplicate event check |
+| `test_createRecurringEvent_live` | CalendarService.gs | A repeating series produces exactly the expected instances |
+| `test_createRecurringWithException_live` | CalendarService.gs | An occurrence with a different time is patched individually |
+| `test_createIrregularSeries_live` | CalendarService.gs | The `RDATE` path materializes on irregular dates |
 | `test_processEventUrl_badUrl` | Code.gs | Error handling for unreachable URLs |
+
+The `*_live` tests create `[TEST]` events and delete them in a `finally` block.
 
 To test a live extraction, edit `test_extractEventData_live` in Extraction.gs, replace the URL with a real event URL, push with `clasp push`, then run it from the editor and inspect the execution log output.
