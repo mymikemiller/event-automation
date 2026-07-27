@@ -29,6 +29,30 @@ function test_dateHelpers() {
   Logger.log('test_dateHelpers: ALL PASSED');
 }
 
+function test_modalTime() {
+  var occ = normalizeOccurrences_([
+    { date: '2026-08-10', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-17', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-24', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-31', start_time: '18:00', end_time: '20:00' }
+  ]);
+  var t = modalTime_(occ);
+  if (t.start_time !== '19:00' || t.end_time !== '20:00') {
+    throw new Error('expected 19:00-20:00, got ' + t.start_time + '-' + t.end_time);
+  }
+
+  // A 2-2 tie resolves to the earliest date's time, so DTSTART stays predictable.
+  var tie = modalTime_(normalizeOccurrences_([
+    { date: '2026-08-10', start_time: '09:00', end_time: '10:00' },
+    { date: '2026-08-11', start_time: '17:00', end_time: '18:00' },
+    { date: '2026-08-12', start_time: '09:00', end_time: '10:00' },
+    { date: '2026-08-13', start_time: '17:00', end_time: '18:00' }
+  ]));
+  if (tie.start_time !== '09:00') throw new Error('tie should pick earliest date, got ' + tie.start_time);
+
+  Logger.log('test_modalTime: ALL PASSED');
+}
+
 var DOW_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 var MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -102,4 +126,26 @@ function normalizeOccurrences_(list) {
   });
   out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
   return out;
+}
+
+/**
+ * The most common start/end pair, which becomes the series time. Ties resolve
+ * to the earliest date because `occ` is already sorted and we compare with a
+ * strict `>`.
+ * @param {Array} occ - normalized occurrences
+ * @returns {{start_time:string, end_time:string}}
+ */
+function modalTime_(occ) {
+  var counts = {};
+  occ.forEach(function (o) {
+    var k = o.start_time + '|' + o.end_time;
+    counts[k] = (counts[k] || 0) + 1;
+  });
+  var best = occ[0];
+  var bestN = 0;
+  occ.forEach(function (o) {
+    var n = counts[o.start_time + '|' + o.end_time];
+    if (n > bestN) { bestN = n; best = o; }
+  });
+  return { start_time: best.start_time, end_time: best.end_time };
 }
