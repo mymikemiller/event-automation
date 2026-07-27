@@ -158,33 +158,99 @@ function buildEventResource_(eventData, occ, tz) {
 }
 
 /**
- * Attaches a Drive file to a Calendar event using the Advanced Calendar Service.
- * @param {string} eventId  - Calendar API event ID (from Calendar.Events.insert)
+ * Last-resort path: create one standalone event per date. Only reached when a
+ * recurring insert throws, never chosen by design.
+ */
+function duplicateEvents_(eventData, plan, calendarId, tz, reason) {
+  var ids = [];
+  var url = null;
+  // Deliberately does not state a count — a per-date insert can still fail
+  // below, and occurrenceCount carries the number actually created.
+  var warnings = ['Could not create a repeating event (' + reason +
+                  '), so separate events were created for each date instead.'];
+
+  plan.dates.forEach(function (occ) {
+    try {
+      var ev = Calendar.Events.insert(buildEventResource_(eventData, occ, tz), calendarId);
+      ids.push(ev.id);
+      if (!url) url = ev.htmlLink;
+    } catch (e) {
+      warnings.push('Could not create the ' + occ.date + ' event: ' + e.message);
+    }
+  });
+
+  if (!ids.length) return { error: 'Failed to create calendar events: ' + reason };
+
+  return {
+    eventId: ids[0],
+    eventIds: ids,
+    eventUrl: url,
+    method: 'duplicate',
+    occurrenceCount: ids.length,
+    warnings: warnings
+  };
+}
+
+/**
+ * Attaches a Drive file to one or more Calendar events.
+ *
+ * A recurring master needs a single call and every instance inherits the
+ * attachment; the duplicate fallback needs one call per event.
+ * @param {Array<string>|string} eventIds - Calendar API event ID(s)
  * @param {string} fileId   - Drive file ID
  * @param {string} fileName - Display name for the attachment
  * @returns {{success: boolean}|{error: string}}
  */
-function attachFileToCalendarEvent(eventId, fileId, fileName) {
+function attachFileToCalendarEvent(eventIds, fileId, fileName) {
   try {
     var calendarId = PropertiesService.getScriptProperties().getProperty('CALENDAR_ID');
     var file = DriveApp.getFileById(fileId);
+    var ids = [].concat(eventIds);
 
-    Calendar.Events.patch(
-      {
-        attachments: [{
-          fileUrl: 'https://drive.google.com/open?id=' + fileId,
-          mimeType: file.getMimeType(),
-          title: fileName
-        }]
-      },
-      calendarId,
-      eventId,
-      { supportsAttachments: true }
-    );
+    ids.forEach(function (id) {
+      Calendar.Events.patch(
+        {
+          attachments: [{
+            fileUrl: 'https://drive.google.com/open?id=' + fileId,
+            mimeType: file.getMimeType(),
+            title: fileName
+          }]
+        },
+        calendarId,
+        id,
+        { supportsAttachments: true }
+      );
+    });
     return { success: true };
   } catch (e) {
     return { error: 'Could not attach image to calendar event: ' + e.message };
   }
+}
+
+/**
+ * Returns the dates that already hold an event with this title, so the result
+ * screen can say "2 of 4 dates already had this event" instead of just "yes".
+ * @param {string} title
+ * @param {Array<string>} dates - YYYY-MM-DD
+ * @returns {Array<string>} colliding dates
+ */
+function findDuplicateDates(title, dates) {
+  var hits = [];
+  try {
+    var calendarId = PropertiesService.getScriptProperties().getProperty('CALENDAR_ID');
+    var cal = CalendarApp.getCalendarById(calendarId);
+    var lowerTitle = title.toLowerCase();
+    dates.forEach(function (d) {
+      var events = cal.getEvents(new Date(d + 'T00:00:00'), new Date(d + 'T23:59:59'));
+      var clash = events.some(function (e) {
+        return e.getTitle().toLowerCase() === lowerTitle;
+      });
+      if (clash) hits.push(d);
+    });
+  } catch (e) {
+    return hits; // Don't block on duplicate check failure
+  }
+  return hits;
 }
 
 /**
@@ -194,17 +260,5 @@ function attachFileToCalendarEvent(eventId, fileId, fileName) {
  * @returns {boolean}
  */
 function isDuplicateEvent(title, date) {
-  try {
-    var calendarId = PropertiesService.getScriptProperties().getProperty('CALENDAR_ID');
-    var cal = CalendarApp.getCalendarById(calendarId);
-    var start = new Date(date + 'T00:00:00');
-    var end = new Date(date + 'T23:59:59');
-    var events = cal.getEvents(start, end);
-    var lowerTitle = title.toLowerCase();
-    return events.some(function(e) {
-      return e.getTitle().toLowerCase() === lowerTitle;
-    });
-  } catch (e) {
-    return false; // Don't block on duplicate check failure
-  }
+  return findDuplicateDates(title, [date]).length > 0;
 }
