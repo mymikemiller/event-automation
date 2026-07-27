@@ -13,15 +13,6 @@ function test_processEventUrl_badUrl() {
 function doGet(e) {
   var webAppUrl = ScriptApp.getService().getUrl();
 
-  // Facebook OAuth callback arrives as ?code=...&state=...
-  if (e && e.parameter && e.parameter.code && e.parameter.state) {
-    var cb = HtmlService.createTemplateFromFile('OAuthCallback');
-    cb.webAppUrl = webAppUrl;
-    return cb.evaluate()
-      .setTitle('Connecting...')
-      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
-  }
-
   var t = HtmlService.createTemplateFromFile('Index');
   t.webAppUrl = webAppUrl;
   return t.evaluate()
@@ -32,7 +23,7 @@ function doGet(e) {
 /**
  * Called by the UI: fetches a URL and returns extracted event data for preview.
  * @param {string} url
- * @returns {{data: Object}|{error: string}|{loginRequired: true, ...}}
+ * @returns {{data: Object}|{error: string, allowPaste?: true, originalUrl?: string}}
  */
 function processEventUrl(url) {
   if (!url || !url.startsWith('http')) {
@@ -42,8 +33,8 @@ function processEventUrl(url) {
 }
 
 /**
- * Called by the UI when the user pastes raw event content (e.g. from a
- * Facebook post they can see while logged in). Passes the text to Claude.
+ * Called by the UI when automatic extraction fails and the user pastes the
+ * event text in by hand. Passes the text to Claude.
  * @param {string} text - Pasted post/page content
  * @param {string} sourceUrl - Original URL for context
  * @returns {{data: Object}|{error: string}}

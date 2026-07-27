@@ -64,41 +64,30 @@ In the Apps Script editor, go to **Project Settings → Script Properties** and 
 
 ---
 
-## Facebook Login (optional — needed for private/group events)
+## Facebook events
 
-Connecting a Facebook account lets the app fetch group posts via the Graph API instead of scraping, which is required for any page behind a login wall.
+Public Facebook event URLs work with no login and no app credentials.
 
-### 1. Create a Facebook App
+Facebook server-renders the whole event into the page HTML for logged-out
+visitors — the "See more on Facebook" dialog is only a client-side overlay
+drawn on top of content that is already there. The script fetches the page with
+an `Accept: text/html` header (without it Facebook returns a JavaScript shell
+containing no event data) and reads the title, exact start/end timestamps,
+location, cover photo, and full description out of the embedded JSON.
 
-1. Go to [developers.facebook.com](https://developers.facebook.com) and click **My Apps → Create App**.
-2. Choose app type **"Other"** → **"Consumer"**.
-3. Give it a name (e.g. "Event Automation") and click **Create App**.
+Two details worth knowing:
 
-### 2. Add Facebook Login
+- The description is copied **verbatim**. It is never passed through the
+  language model to be rewritten, summarised, or shortened.
+- Links keep their real destinations rather than Facebook's `l.facebook.com`
+  redirect wrapper, whose signed token expires — so they still work from the
+  calendar event. Facebook reports link positions as offsets in Unicode
+  codepoints while JavaScript indexes strings in UTF-16 units, so
+  `fbLinkify_()` indexes a codepoint array; otherwise any emoji earlier in the
+  description shifts every href and corrupts it.
 
-1. From your app dashboard, click **Add a Product** and find **Facebook Login** → click **Set Up**.
-2. Choose **Web** as the platform.
-3. In the left sidebar, go to **Facebook Login → Settings**.
-4. Under **Valid OAuth Redirect URIs**, add your GAS web app URL (see Deploy section below — you need to deploy first to get this URL).
-5. Click **Save Changes**.
-
-### 3. Add credentials to Script Properties
-
-In the Apps Script editor, go to **Project Settings → Script Properties** and add:
-
-| Key | Value |
-|-----|-------|
-| `FACEBOOK_APP_ID` | Found on your app dashboard under **App ID** |
-| `FACEBOOK_APP_SECRET` | Found under **App Settings → Basic → App Secret** |
-
-### 4. Add yourself as a test user
-
-Until your app goes through Facebook's App Review, it only works for people with a role in your Facebook App. To add yourself:
-
-1. In the app dashboard, go to **Roles → Test Users** (or **Roles → Roles**).
-2. Add your Facebook account as a **Developer** or **Tester**.
-
-After that, clicking **Connect** in the app will let you log in with your Facebook account and extract events from group posts.
+If Facebook changes its page format, the app falls back to asking you to paste
+the event text in by hand.
 
 ---
 
@@ -107,7 +96,7 @@ After that, clicking **Connect** in the app will let you log in with your Facebo
 The web app entry point is declared in `src/appsscript.json` (the `webapp`
 block: execute as the deploying user, access restricted to the owner). The
 stable `/exec` URL is tied to a fixed **deployment ID** — to keep that URL (and
-any bookmarks / the Facebook redirect URI) stable, always **redeploy that same
+any bookmarks) stable, always **redeploy that same
 deployment** rather than creating a new one.
 
 Use the deploy script:
@@ -132,8 +121,7 @@ https://script.google.com/a/macros/atxveg.org/s/AKfycbx_zs0uCLGSxxB3btHhF3ehvdM_
 > the bookmarked URL. For quick testing without versioning, `clasp push` updates
 > the `/dev` URL immediately (latest saved code, owner login required).
 
-If you ever need to change *who* can access the app (e.g. `ANYONE` so the
-Facebook OAuth callback can reach `/exec`), edit the `access` value in
+If you ever need to change *who* can access the app, edit the `access` value in
 `src/appsscript.json` and run `./deploy.sh`.
 
 ---
@@ -145,8 +133,8 @@ Facebook OAuth callback can reach `/exec`), edit the `access` value in
 Pure logic runs under Node without touching Google at all:
 
 ```bash
-node tests/run.js Extraction.gs RecurrenceService.gs Utilities.gs   # 19 tests
-node tests/calendar.test.js                                          # 5 tests
+node tests/run.js FacebookService.gs Extraction.gs RecurrenceService.gs Utilities.gs   # 26 tests
+node tests/calendar.test.js                                                            # 5 tests
 ```
 
 `tests/run.js` loads `.gs` files into a Node `vm` context with `Logger`/`Session`
