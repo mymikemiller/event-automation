@@ -73,6 +73,17 @@ function test_extractMeetupImage() {
   Logger.log('test_extractMeetupImage: ALL PASSED');
 }
 
+function test_extractMeetupSeries() {
+  var html = '"maxTickets":0,"series":{"__typename":"Series","description":' +
+             '"Every week on Monday until August 31, 2026"},"rsvps":{}';
+  var s = extractMeetupSeries_(html);
+  if (s !== 'Every week on Monday until August 31, 2026') throw new Error('got: ' + s);
+  if (extractMeetupSeries_('<html>no series here</html>') !== null) {
+    throw new Error('expected null when the page has no series');
+  }
+  Logger.log('test_extractMeetupSeries: ALL PASSED');
+}
+
 function test_extractEventData_live() {
   // Replace with a real public event URL for testing
   var url = 'https://lu.ma/some-event';
@@ -208,6 +219,17 @@ function extractEventData(url) {
     cleaned = structuredPrefix + cleaned;
   }
 
+  // Meetup hides its recurrence in page state as prose, and its JSON-LD only
+  // carries the first occurrence — surface it so multi-date series are caught.
+  if (url.indexOf('meetup.com') >= 0) {
+    var series = extractMeetupSeries_(html);
+    if (series) {
+      cleaned = '=== EVENT SERIES RECURRENCE (from Meetup) ===\n' + series +
+                '\nThis event repeats. Enumerate every date in occurrences[], ' +
+                'stopping at the stated end date.\n=== END SERIES ===\n\n' + cleaned;
+    }
+  }
+
   var result = callClaude_(cleaned, false);
   if (result === null) {
     // Retry with stricter prompt
@@ -242,6 +264,23 @@ function extractMeetupImage_(html) {
   var m = html.match(/https:\/\/secure\.meetupstatic\.com\/photos\/[^"'\\ ]*?highres_\d+\.(?:jpe?g|png|webp)/i);
   if (!m) return null;
   return m[0].replace(/\.(?:jpe?g|png|webp)$/i, '.webp') + '?w=1080';
+}
+
+/**
+ * Pulls Meetup's recurrence description out of the embedded page state.
+ *
+ * Meetup's JSON-LD only ever exposes the FIRST occurrence of a series, so a
+ * four-week book club looks like a one-off event. The only recurrence signal on
+ * the page is prose: "series":{"description":"Every week on Monday until
+ * August 31, 2026"}. We surface it to Claude as context rather than parsing it,
+ * because the enumerated dates in the body remain authoritative.
+ * @param {string} html - Raw page HTML
+ * @returns {string|null}
+ */
+function extractMeetupSeries_(html) {
+  var m = html.match(/"series"\s*:\s*\{[^}]*?"description"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (!m) return null;
+  return m[1].replace(/\\"/g, '"').replace(/\\n/g, ' ').trim() || null;
 }
 
 /**
