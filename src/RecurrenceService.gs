@@ -221,6 +221,40 @@ function test_planRecurrence_neverUsesUntil() {
   Logger.log('test_planRecurrence_neverUsesUntil: ALL PASSED');
 }
 
+function test_summarizePlan() {
+  var weekly = planRecurrence_([
+    { date: '2026-08-10', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-17', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-24', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-31', start_time: '18:00', end_time: '20:00' }
+  ], 'America/Chicago').summary;
+
+  if (weekly.indexOf('every week on Monday') < 0) throw new Error('missing cadence: ' + weekly);
+  if (weekly.indexOf('4 occurrences') < 0) throw new Error('missing count: ' + weekly);
+  if (weekly.indexOf('Aug 10') < 0 || weekly.indexOf('Aug 31') < 0) throw new Error('missing range: ' + weekly);
+  if (weekly.indexOf('one repeating') < 0) throw new Error('must state the method: ' + weekly);
+  if (weekly.indexOf('1 date has a different time') < 0) throw new Error('must flag exceptions: ' + weekly);
+
+  var single = planRecurrence_([{ date: '2026-08-10', start_time: '19:00', end_time: '20:00' }], 'America/Chicago').summary;
+  if (single.indexOf('Single event') < 0) throw new Error('single summary: ' + single);
+  if (single.indexOf('7:00 PM') < 0) throw new Error('single should show 12h time: ' + single);
+
+  var irregular = planRecurrence_([
+    { date: '2026-08-10', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-09-03', start_time: '19:00', end_time: '20:00' }
+  ], 'America/Chicago').summary;
+  if (irregular.indexOf('custom date list') < 0) throw new Error('rdate summary: ' + irregular);
+
+  var monthly = planRecurrence_([
+    { date: '2026-08-11', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-09-08', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-10-13', start_time: '19:00', end_time: '20:00' }
+  ], 'America/Chicago').summary;
+  if (monthly.indexOf('second Tuesday') < 0) throw new Error('ordinal cadence: ' + monthly);
+
+  Logger.log('test_summarizePlan: ALL PASSED');
+}
+
 var DOW_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 var MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -504,5 +538,71 @@ function buildRdate_(dates, startTime, tz) {
   return 'RDATE;TZID=' + tz + ':' + stamps.join(',');
 }
 
-// Replaced with real copy by the summary task.
-function summarizePlan_(method, occ, rule) { return method; }
+/** 'Mon, Aug 10' */
+function formatShortDate_(s) {
+  var p = s.split('-');
+  return DAY_NAMES[dowOf_(s)] + ', ' + MONTH_NAMES[+p[1] - 1] + ' ' + (+p[2]);
+}
+
+/** 'Aug 10' */
+function formatDateOnly_(s) {
+  var p = s.split('-');
+  return MONTH_NAMES[+p[1] - 1] + ' ' + (+p[2]);
+}
+
+/** '7:00 PM' */
+function formatTime12_(t) {
+  var p = t.split(':');
+  var h = +p[0];
+  var suffix = h >= 12 ? 'PM' : 'AM';
+  var h12 = h % 12 === 0 ? 12 : h % 12;
+  return h12 + ':' + p[1] + ' ' + suffix;
+}
+
+/** 'every week on Monday', 'every 2 weeks on Monday', 'every month', ... */
+function describeCadence_(rule) {
+  var freq = (rule.match(/FREQ=([A-Z]+)/) || [])[1];
+  var interval = +((rule.match(/INTERVAL=(\d+)/) || [])[1] || 1);
+  var byday = rule.match(/BYDAY=(\d*)([A-Z]{2})/);
+  var unit = { DAILY: 'day', WEEKLY: 'week', MONTHLY: 'month' }[freq] || 'time';
+  var every = interval === 1 ? 'every ' + unit : 'every ' + interval + ' ' + unit + 's';
+
+  if (freq === 'WEEKLY' && byday) {
+    return every + ' on ' + DAY_NAMES_FULL[DOW_CODES.indexOf(byday[2])];
+  }
+  if (freq === 'MONTHLY' && byday && byday[1]) {
+    var ordinals = ['', 'first', 'second', 'third', 'fourth'];
+    return every + ' on the ' + ordinals[+byday[1]] + ' ' + DAY_NAMES_FULL[DOW_CODES.indexOf(byday[2])];
+  }
+  return every;
+}
+
+/**
+ * Plain-language description of what will be created, shown verbatim in the
+ * confirmation banner. States both WHICH dates and HOW they will be created.
+ */
+function summarizePlan_(method, occ, rule) {
+  var n = occ.length;
+
+  if (method === 'single') {
+    return 'Single event on ' + formatShortDate_(occ[0].date) + ', ' +
+           formatTime12_(occ[0].start_time) + ' – ' + formatTime12_(occ[0].end_time) + '.';
+  }
+
+  var range = formatDateOnly_(occ[0].date) + ' – ' + formatDateOnly_(occ[n - 1].date);
+  var head = method === 'rrule'
+    ? 'Repeating event — ' + describeCadence_(rule) + ', ' + n + ' occurrences (' + range + '). ' +
+      'Created as one repeating calendar event.'
+    : 'Repeating event — ' + n + ' custom dates (' + range + '). ' +
+      'Created as one repeating calendar event with a custom date list.';
+
+  var time = modalTime_(occ);
+  var odd = occ.filter(function (o) {
+    return o.start_time !== time.start_time || o.end_time !== time.end_time;
+  }).length;
+  if (odd > 0) {
+    head += ' ' + odd + ' date' + (odd === 1 ? ' has' : 's have') +
+            ' a different time and will be adjusted individually after creation.';
+  }
+  return head;
+}
