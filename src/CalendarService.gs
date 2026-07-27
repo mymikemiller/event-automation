@@ -39,6 +39,103 @@ function test_duplicateDetection() {
   Logger.log('test_duplicateDetection: ALL PASSED');
 }
 
+function test_createRecurringEvent_live() {
+  var result = createCalendarEvent({
+    title: '[TEST] Recurring Series',
+    occurrences: [
+      { date: '2026-08-10', start_time: '19:00', end_time: '20:00' },
+      { date: '2026-08-17', start_time: '19:00', end_time: '20:00' },
+      { date: '2026-08-24', start_time: '19:00', end_time: '20:00' },
+      { date: '2026-08-31', start_time: '19:00', end_time: '20:00' }
+    ],
+    location: '', description: 'Live recurrence test.'
+  });
+  if (result.error) throw new Error(result.error);
+
+  var calendarId = PropertiesService.getScriptProperties().getProperty('CALENDAR_ID');
+  try {
+    if (result.method !== 'rrule') throw new Error('expected rrule, got ' + result.method);
+
+    var items = Calendar.Events.instances(calendarId, result.eventId, {
+      timeMin: '2026-08-01T00:00:00Z', timeMax: '2026-09-30T23:59:59Z'
+    }).items;
+    if (items.length !== 4) throw new Error('expected exactly 4 instances, got ' + items.length);
+
+    var got = items.map(function (i) { return i.start.dateTime.slice(0, 10); }).join(',');
+    if (got !== '2026-08-10,2026-08-17,2026-08-24,2026-08-31') {
+      throw new Error('wrong instance dates: ' + got);
+    }
+  } finally {
+    Calendar.Events.remove(calendarId, result.eventId);
+  }
+  Logger.log('test_createRecurringEvent_live: ALL PASSED');
+}
+
+function test_createRecurringWithException_live() {
+  var result = createCalendarEvent({
+    title: '[TEST] Recurring With Exception',
+    occurrences: [
+      { date: '2026-08-10', start_time: '19:00', end_time: '20:00' },
+      { date: '2026-08-17', start_time: '19:00', end_time: '20:00' },
+      { date: '2026-08-24', start_time: '18:00', end_time: '20:00' }
+    ],
+    location: '', description: 'Live exception test.'
+  });
+  if (result.error) throw new Error(result.error);
+
+  var calendarId = PropertiesService.getScriptProperties().getProperty('CALENDAR_ID');
+  try {
+    if (result.warnings.length) throw new Error('unexpected warnings: ' + result.warnings.join('; '));
+
+    var items = Calendar.Events.instances(calendarId, result.eventId, {
+      timeMin: '2026-08-01T00:00:00Z', timeMax: '2026-09-30T23:59:59Z'
+    }).items;
+    var odd = null;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].start.dateTime.indexOf('2026-08-24') === 0) { odd = items[i]; break; }
+    }
+    if (!odd) throw new Error('could not find the Aug 24 instance');
+    if (odd.start.dateTime.indexOf('T18:00') < 0) {
+      throw new Error('Aug 24 should start at 18:00, got ' + odd.start.dateTime);
+    }
+  } finally {
+    Calendar.Events.remove(calendarId, result.eventId);
+  }
+  Logger.log('test_createRecurringWithException_live: ALL PASSED');
+}
+
+function test_createIrregularSeries_live() {
+  // The RDATE path — the one Google's UI handles least conventionally, so it
+  // is worth proving the instances actually materialize on the right dates.
+  var result = createCalendarEvent({
+    title: '[TEST] Irregular Series',
+    occurrences: [
+      { date: '2026-08-10', start_time: '19:00', end_time: '20:00' },
+      { date: '2026-08-17', start_time: '19:00', end_time: '20:00' },
+      { date: '2026-09-03', start_time: '19:00', end_time: '20:00' },
+      { date: '2026-09-20', start_time: '19:00', end_time: '20:00' }
+    ],
+    location: '', description: 'Live RDATE test.'
+  });
+  if (result.error) throw new Error(result.error);
+
+  var calendarId = PropertiesService.getScriptProperties().getProperty('CALENDAR_ID');
+  try {
+    if (result.method !== 'rdate') throw new Error('expected rdate, got ' + result.method);
+
+    var items = Calendar.Events.instances(calendarId, result.eventId, {
+      timeMin: '2026-08-01T00:00:00Z', timeMax: '2026-10-31T23:59:59Z'
+    }).items;
+    var got = items.map(function (i) { return i.start.dateTime.slice(0, 10); }).join(',');
+    if (got !== '2026-08-10,2026-08-17,2026-09-03,2026-09-20') {
+      throw new Error('wrong RDATE instance dates: ' + got);
+    }
+  } finally {
+    Calendar.Events.remove(calendarId, result.eventId);
+  }
+  Logger.log('test_createIrregularSeries_live: ALL PASSED');
+}
+
 /**
  * Creates a Google Calendar event from one or more occurrences.
  *
