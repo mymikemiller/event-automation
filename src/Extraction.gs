@@ -22,6 +22,36 @@ function test_parseClaudeResponse() {
   Logger.log('test_parseClaudeResponse: ALL PASSED');
 }
 
+function test_parseOccurrences() {
+  // A response WITHOUT occurrences must degrade to today's behavior, not crash.
+  var legacy = parseClaudeResponse_(JSON.stringify({
+    title: 'One Night Only', date: '2026-08-10',
+    start_time: '19:00', end_time: '20:00'
+  }));
+  if (!legacy.occurrences || legacy.occurrences.length !== 1) {
+    throw new Error('legacy response should back-fill one occurrence');
+  }
+  if (legacy.occurrences[0].date !== '2026-08-10') throw new Error('back-fill used the wrong date');
+  if (legacy.occurrences[0].start_time !== '19:00') throw new Error('back-fill lost the start time');
+
+  var multi = parseClaudeResponse_(JSON.stringify({
+    title: 'Vegan Book Club', date: '2026-08-10', start_time: '19:00', end_time: '20:00',
+    occurrences: [
+      { date: '2026-08-10', start_time: '19:00', end_time: '20:00' },
+      { date: '2026-08-17', start_time: '19:00', end_time: '20:00' }
+    ]
+  }));
+  if (multi.occurrences.length !== 2) throw new Error('multi-date list should survive parsing');
+
+  // An empty array is as useless as a missing one — back-fill it too.
+  var empty = parseClaudeResponse_(JSON.stringify({
+    title: 'Empty', date: '2026-08-10', start_time: '19:00', end_time: null, occurrences: []
+  }));
+  if (empty.occurrences.length !== 1) throw new Error('empty occurrences should be back-filled');
+
+  Logger.log('test_parseOccurrences: ALL PASSED');
+}
+
 function test_extractMeetupImage() {
   // Meetup embeds the full photo as highres_<id> in its page state; we should
   // rewrite it to a width-capped webp and ignore the square classic-events crop.
@@ -62,6 +92,7 @@ var EXTRACTION_PROMPT = `You are extracting event details from a webpage. Return
   "start_time": "HH:MM in 24h format (string, required)",
   "end_time": "HH:MM in 24h format, or null if unknown (string|null)",
   "end_time_note": "Explain your best guess for end time, or null if end time was explicit (string|null)",
+  "occurrences": "Array of every date this event happens on: [{\"date\":\"YYYY-MM-DD\",\"start_time\":\"HH:MM\",\"end_time\":\"HH:MM|null\"}]. ALWAYS include at least one entry (array)",
   "location": "Full location string, or null (string|null)",
   "description": "COMPLETE event description as HTML. Copy ALL body text word-for-word — every paragraph, bullet point, and formatted text that describes the event. Do NOT use og:description or twitter:description meta tags as the source — those are truncated previews. Find the full description in the page body and copy it entirely without summarizing or omitting any text. Use only: <b>, <i>, <ul>, <li>, <a href>, <br>. Strip all other tags. Or null if no description. (string|null)",
   "image_url": "Direct URL to the main event image, or null (string|null)",
@@ -76,7 +107,12 @@ Rules:
 - For source_link_label: infer from the URL domain if possible.
 - For description: copy ALL body text word-for-word. Do NOT summarize or truncate. Preserve bold/italic/links/lists using only <b>, <i>, <ul>, <li>, <a href>, <br>. Strip all other HTML tags.
 - Dates must be YYYY-MM-DD. Times must be HH:MM (24h).
-- For dates where the year is not explicitly stated: use the nearest future occurrence relative to today. Never infer a date in the past.`;
+- For dates where the year is not explicitly stated: use the nearest future occurrence relative to today. Never infer a date in the past.
+- occurrences: list EVERY date the page states this event happens on. A normal single-date event returns an array of exactly one entry. The top-level date/start_time/end_time must always mirror occurrences[0].
+- Do NOT extrapolate a recurrence beyond the dates actually shown. If the page gives both a rule ("every week on Monday until August 31") and an explicit list of dates, the explicit list wins.
+- If a recurrence is described in prose WITH a stated end date but the individual dates are not listed, expand it into explicit dates yourself and stop at the stated end. Never invent dates past it.
+- If a specific date has a different start or end time from the others, put that date's real time on its own entry. Otherwise repeat the common time on every entry.
+- Apply the nearest-future-occurrence rule to the FIRST date only, then keep dates increasing, so a list like "12/20, 1/10" rolls into the following year.`;
 
 /**
  * Fetches a URL and extracts event data using Claude.
@@ -342,7 +378,16 @@ function parseClaudeResponse_(text) {
     // Extract JSON object if wrapped in extra text
     var match = text.match(/\{[\s\S]*\}/);
     if (!match) return null;
-    return JSON.parse(match[0]);
+    var data = JSON.parse(match[0]);
+
+    // Older/partial responses omit `occurrences`. Back-fill a one-element list
+    // from the top-level fields so downstream code has a single shape to handle.
+    if (!data.occurrences || !data.occurrences.length) {
+      data.occurrences = data.date
+        ? [{ date: data.date, start_time: data.start_time, end_time: data.end_time || null }]
+        : [];
+    }
+    return data;
   } catch (e) {
     return null;
   }
