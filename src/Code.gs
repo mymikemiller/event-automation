@@ -61,19 +61,29 @@ function processEventText(text, sourceUrl) {
 
 /**
  * Called by the UI after the user confirms: creates Drive file, Calendar event, attaches image.
- * @param {Object} eventData - Confirmed, user-edited event fields + imageUrl + sourceUrl
+ * @param {Object} eventData - Confirmed, user-edited event fields + imageUrl + sourceUrl.
+ *   Carries occurrences[] for multi-date events.
  * @returns {{success: true, calendarUrl: string, driveUrl: string}|{error: string, partial: Object}}
  */
 function submitEvent(eventData) {
   var driveResult = null;
-  var calResult = null;
 
-  // 1. Check for duplicates
-  var duplicate = isDuplicateEvent(eventData.title, eventData.date);
+  var occurrences = (eventData.occurrences && eventData.occurrences.length)
+    ? eventData.occurrences
+    : [{ date: eventData.date, start_time: eventData.start_time, end_time: eventData.end_time }];
 
-  // 2. Save image to Drive (non-blocking)
+  // Re-plan server-side. The UI's banner is only a preview; this is what runs.
+  var plan = planRecurrence_(occurrences, Session.getScriptTimeZone());
+  if (plan.method === 'none') return { error: 'Please provide at least one valid date.' };
+
+  var dates = plan.dates.map(function (o) { return o.date; });
+
+  // 1. Which of these dates already have this event?
+  var duplicateDates = findDuplicateDates(eventData.title, dates);
+
+  // 2. Save image to Drive (non-blocking), named for the first occurrence
   if (eventData.image_url) {
-    driveResult = saveImageToDrive(eventData.image_url, eventData.title, eventData.date);
+    driveResult = saveImageToDrive(eventData.image_url, eventData.title, dates[0]);
     if (driveResult.error) {
       driveResult = null; // Continue without image
     }
@@ -85,12 +95,10 @@ function submitEvent(eventData) {
     fullDescription += '\n\n<a href="' + eventData.source_url + '">' + eventData.source_link_label + '</a>';
   }
 
-  // 4. Create Calendar event
-  calResult = createCalendarEvent({
+  // 4. Create Calendar event(s)
+  var calResult = createCalendarEvent({
     title: eventData.title,
-    date: eventData.date,
-    start_time: eventData.start_time,
-    end_time: eventData.end_time,
+    occurrences: occurrences,
     location: eventData.location,
     description: fullDescription
   });
@@ -102,11 +110,11 @@ function submitEvent(eventData) {
     };
   }
 
-  // 5. Attach Drive image to Calendar event
+  // 5. Attach Drive image to the Calendar event(s)
   var attachResult = null;
   if (driveResult) {
     attachResult = attachFileToCalendarEvent(
-      calResult.eventId,
+      calResult.eventIds,
       driveResult.fileId,
       driveResult.fileName
     );
@@ -119,7 +127,11 @@ function submitEvent(eventData) {
 
   return {
     success: true,
-    duplicate: duplicate,
+    method: calResult.method,
+    occurrenceCount: calResult.occurrenceCount,
+    dates: dates,
+    duplicateDates: duplicateDates,
+    warnings: calResult.warnings || [],
     title: eventData.title,
     calendarUrl: calendarUrl,
     driveUrl: driveResult ? driveResult.fileUrl : null,
