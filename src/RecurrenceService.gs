@@ -85,6 +85,32 @@ function test_fitMonthly() {
   Logger.log('test_fitMonthly: ALL PASSED');
 }
 
+function test_expandRule() {
+  var weekly = expandRule_('RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=4', '2026-08-10', 4);
+  if (weekly.join(',') !== '2026-08-10,2026-08-17,2026-08-24,2026-08-31') {
+    throw new Error('weekly expansion: ' + weekly.join(','));
+  }
+
+  var monthly = expandRule_('RRULE:FREQ=MONTHLY;COUNT=3', '2026-08-15', 3);
+  if (monthly.join(',') !== '2026-08-15,2026-09-15,2026-10-15') {
+    throw new Error('monthly expansion: ' + monthly.join(','));
+  }
+
+  // RFC 5545: a monthly-by-date rule SKIPS months lacking that day.
+  // Jan 31 monthly does not produce Feb 28 — this is what catches a bad fit.
+  var skips = expandRule_('RRULE:FREQ=MONTHLY;COUNT=3', '2026-01-31', 3);
+  if (skips.join(',') !== '2026-01-31,2026-03-31,2026-05-31') {
+    throw new Error('monthly should skip short months: ' + skips.join(','));
+  }
+
+  var byWeekday = expandRule_('RRULE:FREQ=MONTHLY;BYDAY=2TU;COUNT=3', '2026-08-11', 3);
+  if (byWeekday.join(',') !== '2026-08-11,2026-09-08,2026-10-13') {
+    throw new Error('2nd Tuesday expansion: ' + byWeekday.join(','));
+  }
+
+  Logger.log('test_expandRule: ALL PASSED');
+}
+
 var DOW_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 var MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -253,4 +279,54 @@ function fitMonthlyByWeekday_(dates) {
   if (!k) return null;
   return 'RRULE:FREQ=MONTHLY' + (k > 1 ? ';INTERVAL=' + k : '') +
          ';BYDAY=' + ord + DOW_CODES[dow] + ';COUNT=' + dates.length;
+}
+
+/**
+ * Expands an RRULE line into the dates it would actually generate, following
+ * RFC 5545's rule that invalid dates (Feb 31) are skipped rather than clamped.
+ * Used to verify a fitted rule before trusting it.
+ * @param {string} rule
+ * @param {string} startYmd - DTSTART date, always instance 1
+ * @param {number} n
+ * @returns {Array<string>}
+ */
+function expandRule_(rule, startYmd, n) {
+  var freq = (rule.match(/FREQ=([A-Z]+)/) || [])[1];
+  var interval = +((rule.match(/INTERVAL=(\d+)/) || [])[1] || 1);
+  var byday = rule.match(/BYDAY=(\d*)([A-Z]{2})/);
+  var out = [];
+
+  if (freq === 'DAILY' || freq === 'WEEKLY') {
+    var step = (freq === 'DAILY' ? 1 : 7) * interval;
+    for (var i = 0; i < n; i++) {
+      out.push(ymd_(dateUtc_(startYmd) + i * step * 86400000));
+    }
+    return out;
+  }
+
+  if (freq === 'MONTHLY') {
+    var p = startYmd.split('-');
+    var y = +p[0];
+    var m = +p[1] - 1;
+    var dom = +p[2];
+    var guard = 0;
+    while (out.length < n && guard++ < 600) {
+      var cand = (byday && byday[1])
+        ? nthWeekdayOfMonth_(y, m, +byday[1], DOW_CODES.indexOf(byday[2]))
+        : exactDayOfMonth_(y, m, dom);
+      if (cand) out.push(cand);
+      m += interval;
+      y += Math.floor(m / 12);
+      m = ((m % 12) + 12) % 12;
+    }
+    return out;
+  }
+
+  return [];
+}
+
+function sameList_(a, b) {
+  if (a.length !== b.length) return false;
+  for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
