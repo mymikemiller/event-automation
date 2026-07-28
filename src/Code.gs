@@ -111,6 +111,16 @@ function submitEvent(eventData) {
     );
   }
 
+  // 6. Queue the Tockify image update. Tockify syncs from Google within
+  //    seconds, but not instantly, so a trigger applies this shortly after.
+  if (eventData.image_url && plan.dates.length) {
+    tockifyQueueAdd_(
+      eventData.title,
+      tockifyStartMillis_(plan.dates[0]),
+      eventData.image_url
+    );
+  }
+
   var userEmail = Session.getActiveUser().getEmail();
   var calendarUrl = calResult.eventUrl +
     (calResult.eventUrl.indexOf('?') >= 0 ? '&' : '?') +

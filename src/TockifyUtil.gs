@@ -133,6 +133,12 @@ function tockifyShouldGiveUp_(job, now) {
 
 /**
  * Epoch milliseconds for an occurrence, matching Tockify's when.start.millis.
+ *
+ * Builds the Date from local parts, so this is only correct while the script's
+ * runtime timezone matches the calendar's. Both are America/Chicago — the
+ * runtime's comes from the `timeZone` field in appsscript.json. Change one and
+ * you must change the other, or every lookup will miss by the offset.
+ *
  * @param {{date: string, start_time: string}} occurrence - YYYY-MM-DD and HH:MM
  * @returns {number}
  */
