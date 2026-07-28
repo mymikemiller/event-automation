@@ -101,7 +101,11 @@
       </div>
       <div class="field-group">
         <label for="f-image-url">Image URL</label>
-        <input type="url" id="f-image-url">
+        <input type="url" id="f-image-url" oninput="queueImagePreview()">
+        <img id="f-image-preview" class="img-preview" alt="Event image preview" style="display:none">
+        <div id="f-image-preview-fallback" class="img-preview-fallback" style="display:none">
+          Image preview unavailable — check the URL, or the link may have expired.
+        </div>
       </div>
       <div id="submit-status"></div>
       <button class="btn-success" id="submit-btn" onclick="submitEvent()">Create Calendar Event</button>
@@ -325,6 +329,7 @@
       document.getElementById('f-description').value = data.description || '';
       document.getElementById('f-link-label').value = data.source_link_label || 'See Website for details';
       document.getElementById('f-image-url').value = data.image_url || '';
+      updateImagePreview();
 
       // Show end time note if guessed
       var noteEl = document.getElementById('end-time-note');
@@ -452,6 +457,46 @@
                  '<input id="img-url-text" type="text" readonly value="' + safeUrl + '" style="margin-top:6px;font-size:0.8rem">';
       }
       document.getElementById('result-links').innerHTML = links;
+    }
+
+    var imagePreviewTimer = null;
+
+    /**
+     * Redraws the preview after a pause, so editing the URL by hand doesn't
+     * fire a request per keystroke.
+     */
+    function queueImagePreview() {
+      clearTimeout(imagePreviewTimer);
+      imagePreviewTimer = setTimeout(updateImagePreview, 400);
+    }
+
+    /**
+     * Shows the image at the current URL on the review screen. A failed load
+     * is expected rather than exceptional — source images are often Facebook
+     * CDN links whose signed tokens expire — so it falls back to a note
+     * instead of a broken-image icon.
+     */
+    function updateImagePreview() {
+      var url = document.getElementById('f-image-url').value.trim();
+      var img = document.getElementById('f-image-preview');
+      var fallback = document.getElementById('f-image-preview-fallback');
+
+      fallback.style.display = 'none';
+      if (!url) {
+        img.style.display = 'none';
+        img.removeAttribute('src');
+        return;
+      }
+
+      img.onload = function () {
+        img.style.display = 'block';
+        fallback.style.display = 'none';
+      };
+      img.onerror = function () {
+        img.style.display = 'none';
+        fallback.style.display = 'block';
+      };
+      img.src = url;
     }
 
     /**
