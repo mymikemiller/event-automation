@@ -8,13 +8,10 @@ function processTockifyQueue_() {
   var jobs = tockifyQueueLoad_();
   if (!jobs.length) return;
 
-  var login = tockifyLogin_();
+  var login = tockifySession_();
   if (login.error) {
-    login = tockifyLogin_(true); // cached cookie may have expired
-    if (login.error) {
-      tockifyNotify_('Tockify login failed', login.error);
-      return;
-    }
+    tockifyNotify_('Tockify login failed', login.error);
+    return; // leave the queue intact; next run tries again
   }
 
   var now = Date.now();
@@ -70,7 +67,14 @@ function tockifyApplyImage_(cookie, job) {
  * @param {string} body
  */
 function tockifyNotify_(subject, body) {
-  MailApp.sendEmail(Session.getActiveUser().getEmail(), '[Event Automation] ' + subject, body);
+  // getActiveUser() returns "" in a time-driven trigger, which would send the
+  // failure notice nowhere. getEffectiveUser() is the script owner either way.
+  var to = Session.getEffectiveUser().getEmail();
+  if (!to) {
+    Logger.log('Tockify notify failed, no recipient: ' + subject + ' — ' + body);
+    return;
+  }
+  MailApp.sendEmail(to, '[Event Automation] ' + subject, body);
 }
 
 /**

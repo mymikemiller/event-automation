@@ -54,6 +54,27 @@ function tockifyLogin_(forceFresh) {
 }
 
 /**
+ * Returns a session cookie known to be live.
+ *
+ * tockifyLogin_ will happily hand back a cached cookie that the server has
+ * since expired — it has no way to tell. Without this check the first real
+ * call fails with an HTTP error and the job gets reported as broken when all
+ * it needed was a fresh login. So probe a cheap authenticated endpoint and
+ * re-login if the cookie is dead.
+ *
+ * @returns {{cookie: string}|{error: string}}
+ */
+function tockifySession_() {
+  var login = tockifyLogin_();
+  if (login.error) return login;
+
+  var probe = tockifyFetch_('/api/subscription-status', login.cookie);
+  if (probe.getResponseCode() === 200) return login;
+
+  return tockifyLogin_(true);
+}
+
+/**
  * UrlFetchApp wrapper that sends the session cookie and the headers Tockify's
  * API expects. Returns the raw response so callers can check the status.
  * @param {string} path - e.g. "/api/ngevent?..."
