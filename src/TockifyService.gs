@@ -32,25 +32,45 @@ function tockifyLogin_(forceFresh) {
     return { error: 'TOCKIFY_EMAIL / TOCKIFY_PASSWORD not set in Script Properties' };
   }
 
-  // UNVERIFIED: the login form is <form name="fLogin"> with inputs named
-  // "email" and "password", but it has no action attribute — Angular submits
-  // it — and the POST target could not be found by probing, because this
-  // server returns 404 for a correct path with an unexpected body. Replace
-  // the url/contentType/payload below with the captured request.
-  var res = UrlFetchApp.fetch('https://tockify.com/i/site/login', {
+  // stayLoggedIn asks for the long-lived session rather than a browser-session
+  // cookie. nextUri is what the web UI sends; the API expects the field.
+  var res = UrlFetchApp.fetch('https://tockify.com/api/sessions2', {
     method: 'post',
     contentType: 'application/json',
-    payload: JSON.stringify({ email: email, password: password }),
+    headers: { 'Accept': 'application/json' },
+    payload: JSON.stringify({
+      stayLoggedIn: true,
+      email: email,
+      password: password,
+      nextUri: '/'
+    }),
     followRedirects: false,
     muteHttpExceptions: true
   });
 
   var cookie = tockifySessionCookie_(res.getAllHeaders()['Set-Cookie']);
   if (!cookie) {
-    return { error: 'Tockify login failed (HTTP ' + res.getResponseCode() + ')' };
+    return { error: 'Tockify login failed: ' + tockifyLoginError_(res) };
   }
   cache.put('TOCKIFY_COOKIE', cookie, 21600);
   return { cookie: cookie };
+}
+
+/**
+ * Human-readable reason a login was refused. Bad credentials come back as
+ * HTTP 400 with {errors: {form: {message}}}; anything else falls back to the
+ * status code.
+ * @param {HTTPResponse} res
+ * @returns {string}
+ */
+function tockifyLoginError_(res) {
+  try {
+    var body = JSON.parse(res.getContentText());
+    if (body && body.errors && body.errors.form && body.errors.form.message) {
+      return body.errors.form.message + ' (HTTP ' + res.getResponseCode() + ')';
+    }
+  } catch (e) { /* fall through to the status code */ }
+  return 'HTTP ' + res.getResponseCode();
 }
 
 /**

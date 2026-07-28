@@ -99,14 +99,33 @@ JS-readable cookies are all analytics and Stripe.
 
 That left two options, and only one of them runs unattended:
 
-- **Stored password, log in each run** — chosen. The login form is plain
-  email/password at `POST https://tockify.com/i/site/login`, with no captcha and
-  no SSO, so it replays cleanly from `UrlFetchApp`.
+- **Stored password, log in each run** — chosen. No captcha, no SSO, so it
+  replays cleanly from `UrlFetchApp`.
 - Captured session cookie — rejected. An httpOnly cookie has to be dug out of
   DevTools by hand and expires on Tockify's schedule, not ours.
 
-Cache the session cookie in `CacheService` between runs and re-login when a call
-comes back rejected.
+```
+POST /api/sessions2
+Content-Type: application/json
+Accept: application/json
+
+{ "stayLoggedIn": true, "email": "…", "password": "…", "nextUri": "/" }
+```
+
+`stayLoggedIn` asks for the long-lived session rather than a browser-session
+cookie. Success sets `TKFSession`; bad credentials return HTTP 400 with
+`{errors: {form: {message}}}`.
+
+The endpoint is not discoverable by probing — the form has no `action`
+attribute, and this server answers **404 for auth failures and routing failures
+alike** (`/api/subscription-status` returns 404 `"not logged in"` when
+unauthenticated). A 404 here means nothing; it had to be captured from a real
+login.
+
+Cache the cookie in `CacheService` for 6 hours. Because a cached cookie can be
+expired server-side without the script knowing, probe
+`GET /api/subscription-status` before each run — 200 means live, anything else
+means log in fresh.
 
 ---
 
@@ -216,8 +235,9 @@ accepting the default by hand produces.
 
 ## Open items
 
-- No end-to-end run has been done. Each link is verified individually; the first
-  real event exercises the chain as a whole.
+- No end-to-end run has been done. Each link is verified individually against
+  the live API, and the Apps Script translation of those calls has never been
+  executed. The first real event exercises the chain as a whole.
 - Everything was verified against a **native** Tockify event. Google-synced
   events show "This event is managed outside of Tockify so some fields can't be
   changed here", which greys out title/date/description — but the Change Image
