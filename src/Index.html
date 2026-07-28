@@ -31,6 +31,8 @@
     .field-row { display: flex; gap: 8px; }
     .field-row .field-group { flex: 1; }
     a.link-btn { display: block; text-align: center; padding: 10px; border-radius: 6px; background: #e8f0fe; color: #1a73e8; text-decoration: none; font-weight: 600; margin-top: 8px; }
+    .img-preview { display: block; width: 100%; max-height: 320px; object-fit: contain; margin-top: 12px; border-radius: 6px; border: 1px solid #ddd; background: #f8f9fa; }
+    .img-preview-fallback { margin-top: 12px; padding: 10px 12px; border-radius: 6px; font-size: 0.86rem; background: #f1f3f4; color: #777; border: 1px solid #ddd; }
     .rec-banner { padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 0.86rem; background: #e8f0fe; color: #174ea6; border: 1px solid #c5d3f0; }
     .rec-banner.checking { background: #f1f3f4; color: #777; border-color: #ddd; }
     .rec-banner.single { background: #f1f3f4; color: #555; border-color: #ddd; }
@@ -99,7 +101,11 @@
       </div>
       <div class="field-group">
         <label for="f-image-url">Image URL</label>
-        <input type="url" id="f-image-url">
+        <input type="url" id="f-image-url" oninput="queueImagePreview()">
+        <img id="f-image-preview" class="img-preview" alt="Event image preview" style="display:none">
+        <div id="f-image-preview-fallback" class="img-preview-fallback" style="display:none">
+          Image preview unavailable — check the URL, or the link may have expired.
+        </div>
       </div>
       <div id="submit-status"></div>
       <button class="btn-success" id="submit-btn" onclick="submitEvent()">Create Calendar Event</button>
@@ -323,6 +329,7 @@
       document.getElementById('f-description').value = data.description || '';
       document.getElementById('f-link-label').value = data.source_link_label || 'See Website for details';
       document.getElementById('f-image-url').value = data.image_url || '';
+      updateImagePreview();
 
       // Show end time note if guessed
       var noteEl = document.getElementById('end-time-note');
@@ -437,10 +444,72 @@
         links += '<a class="link-btn" href="' + result.driveUrl + '" target="_blank">View Image in Drive</a>';
       }
       if (result.imageUrl) {
-        links += '<button onclick="copyImageUrl()" class="btn-primary" style="margin-top:8px">Copy Image URL</button>' +
-                 '<input id="img-url-text" type="text" readonly value="' + result.imageUrl + '" style="margin-top:6px;font-size:0.8rem">';
+        var safeUrl = escapeAttr(result.imageUrl);
+        // Source images are often Facebook CDN links, whose signed tokens
+        // expire — so a broken preview is expected sometimes, not an error.
+        links += '<img class="img-preview" src="' + safeUrl + '" alt="Event image"' +
+                 ' onerror="this.style.display=\'none\';' +
+                 'document.getElementById(\'img-preview-fallback\').style.display=\'block\'">' +
+                 '<div id="img-preview-fallback" class="img-preview-fallback" style="display:none">' +
+                 'Image preview unavailable — the link may have expired. The URL below is still what was used.' +
+                 '</div>' +
+                 '<button onclick="copyImageUrl()" class="btn-primary" style="margin-top:8px">Copy Image URL</button>' +
+                 '<input id="img-url-text" type="text" readonly value="' + safeUrl + '" style="margin-top:6px;font-size:0.8rem">';
       }
       document.getElementById('result-links').innerHTML = links;
+    }
+
+    var imagePreviewTimer = null;
+
+    /**
+     * Redraws the preview after a pause, so editing the URL by hand doesn't
+     * fire a request per keystroke.
+     */
+    function queueImagePreview() {
+      clearTimeout(imagePreviewTimer);
+      imagePreviewTimer = setTimeout(updateImagePreview, 400);
+    }
+
+    /**
+     * Shows the image at the current URL on the review screen. A failed load
+     * is expected rather than exceptional — source images are often Facebook
+     * CDN links whose signed tokens expire — so it falls back to a note
+     * instead of a broken-image icon.
+     */
+    function updateImagePreview() {
+      var url = document.getElementById('f-image-url').value.trim();
+      var img = document.getElementById('f-image-preview');
+      var fallback = document.getElementById('f-image-preview-fallback');
+
+      fallback.style.display = 'none';
+      if (!url) {
+        img.style.display = 'none';
+        img.removeAttribute('src');
+        return;
+      }
+
+      img.onload = function () {
+        img.style.display = 'block';
+        fallback.style.display = 'none';
+      };
+      img.onerror = function () {
+        img.style.display = 'none';
+        fallback.style.display = 'block';
+      };
+      img.src = url;
+    }
+
+    /**
+     * Escapes a value for use inside a double-quoted HTML attribute. Image URLs
+     * come from scraped pages, so they can carry quotes and ampersands that
+     * would otherwise break out of the attribute.
+     */
+    function escapeAttr(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
     }
 
     function copyImageUrl() {

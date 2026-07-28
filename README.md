@@ -61,6 +61,8 @@ In the Apps Script editor, go to **Project Settings → Script Properties** and 
 | `CLAUDE_API_KEY` | Your Anthropic API key |
 | `CALENDAR_ID` | The Google Calendar ID to create events on (find it in Calendar Settings → Integrate calendar) |
 | `DRIVE_FOLDER_ID` | The Google Drive folder ID where flyer images are saved (the ID at the end of the folder's URL) |
+| `TOCKIFY_EMAIL` | The Tockify account email |
+| `TOCKIFY_PASSWORD` | The Tockify account password |
 
 ---
 
@@ -88,6 +90,41 @@ Two details worth knowing:
 
 If Facebook changes its page format, the app falls back to asking you to paste
 the event text in by hand.
+
+---
+
+## Tockify
+
+Events reach Tockify by Google Calendar sync, which carries no image. The script
+closes that gap: submitting an event queues a job, and a trigger running every
+five minutes sets the flyer as the featured image on the matching Tockify event.
+
+The image goes over as the **original source URL**, not the Drive copy. Tockify
+downloads and keeps its own copy, so the link only has to survive a single
+fetch — and `saveImageToDrive` returns a Drive *viewer* page, which would give
+Tockify HTML rather than an image.
+
+Matching is on title **and** exact start time. Title alone is not enough, since
+repeating events share one. A multi-date event syncs to Tockify as a single
+repeating record, so there is one image to set no matter how many dates it has.
+
+Three details worth knowing:
+
+- Tockify issues no API token. Auth is a session cookie obtained by logging in
+  with `TOCKIFY_EMAIL` / `TOCKIFY_PASSWORD`. Enabling MFA on the Tockify account
+  breaks this and there is no fallback.
+- Cropping is skipped deliberately. Tockify applies crops at display time as CDN
+  URL operations, and its cropper defaults to the whole image — so skipping the
+  step produces exactly what accepting the default by hand produces.
+- `imageIdNg` is the field that sets the image. Writing `imageSets` directly
+  returns HTTP 200 and is silently ignored, so the code re-reads the response
+  and treats an empty `imageSets` as a failure.
+
+If an event has not appeared in Tockify within two hours, the job is dropped and
+you get an email. None of these endpoints are documented or contractual, so
+failures are loud by design.
+
+Run `installTockifyTrigger` once from the editor to install the trigger.
 
 ---
 
