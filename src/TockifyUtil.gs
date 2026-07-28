@@ -19,11 +19,31 @@ function test_tockifyUtil() {
 
   // tockifyMatchEvent_ — must match on title AND start time
   var events = [
-    { eid: { uid: '11' }, content: { summary: { text: 'Other' } }, when: { start: { millis: 100 } } },
-    { eid: { uid: '42' }, content: { summary: { text: 'Potluck' } }, when: { start: { millis: 200 } } },
-    { eid: { uid: '43' }, content: { summary: { text: 'Potluck' } }, when: { start: { millis: 999 } } }
+    { eid: { uid: '11' }, ctstamp: 1, content: { summary: { text: 'Other' } }, when: { start: { millis: 100 } } },
+    { eid: { uid: '42' }, ctstamp: 1, content: { summary: { text: 'Potluck' } }, when: { start: { millis: 200 } } },
+    { eid: { uid: '43' }, ctstamp: 1, content: { summary: { text: 'Potluck' } }, when: { start: { millis: 999 } } }
   ];
   if (tockifyMatchEvent_(events, 'Potluck', 200) !== '42') throw new Error('match failed');
+
+  // Duplicates share a title and start time. The job was enqueued for the
+  // event just created, so the newest must win — picking the first match
+  // silently image-stamps an older copy and reports success.
+  var dupes = [
+    { eid: { uid: '127' }, ctstamp: 1000, content: { summary: { text: 'Movie Night' } }, when: { start: { millis: 500 } } },
+    { eid: { uid: '129' }, ctstamp: 9000, content: { summary: { text: 'Movie Night' } }, when: { start: { millis: 500 } } }
+  ];
+  if (tockifyMatchEvent_(dupes, 'Movie Night', 500) !== '129') {
+    throw new Error('duplicates: newest should win');
+  }
+  dupes.reverse(); // order from the API must not matter
+  if (tockifyMatchEvent_(dupes, 'Movie Night', 500) !== '129') {
+    throw new Error('duplicates: newest should win regardless of order');
+  }
+  // A match with no ctstamp must still be usable rather than discarded.
+  var noStamp = [
+    { eid: { uid: '77' }, content: { summary: { text: 'Solo' } }, when: { start: { millis: 5 } } }
+  ];
+  if (tockifyMatchEvent_(noStamp, 'Solo', 5) !== '77') throw new Error('missing ctstamp should still match');
   if (tockifyMatchEvent_(events, 'Potluck', 555) !== null) throw new Error('should not match wrong time');
   if (tockifyMatchEvent_(events, 'Nope', 200) !== null) throw new Error('should not match wrong title');
   if (tockifyMatchEvent_([], 'Potluck', 200) !== null) throw new Error('empty list should be null');
@@ -86,7 +106,13 @@ function tockifyCdnUrl_(uuid) {
 
 /**
  * Finds the uid of the event matching both title and start time.
- * Title alone is not enough — repeating events share a title.
+ *
+ * Title alone is not enough — repeating events share one. Nor is title plus
+ * start time unique: the same event can be on the calendar twice, and taking
+ * the first match then stamps the image onto an older copy and reports
+ * success, leaving the event you just created untouched and silent. The job
+ * was enqueued for the event just created, so the newest match wins.
+ *
  * @param {Array} events - from GET /api/ngevent
  * @param {string} title
  * @param {number} startMillis
@@ -94,15 +120,16 @@ function tockifyCdnUrl_(uuid) {
  */
 function tockifyMatchEvent_(events, title, startMillis) {
   if (!events || !events.length) return null;
+  var best = null;
   for (var i = 0; i < events.length; i++) {
     var e = events[i];
     var t = e && e.content && e.content.summary && e.content.summary.text;
     var s = e && e.when && e.when.start && e.when.start.millis;
-    if (t === title && s === startMillis) {
-      return (e.eid && e.eid.uid) ? e.eid.uid : null;
-    }
+    if (t !== title || s !== startMillis) continue;
+    if (!e.eid || !e.eid.uid) continue;
+    if (!best || (e.ctstamp || 0) > (best.ctstamp || 0)) best = e;
   }
-  return null;
+  return best ? best.eid.uid : null;
 }
 
 /**
