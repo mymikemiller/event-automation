@@ -12,6 +12,27 @@
 
 ---
 
+## Status: executed 2026-07-27, except Task 11
+
+Tasks 1–10 and 12 are done and committed on `tockify-image-automation`.
+**Task 11 (live verification) is outstanding** — it needs Script Properties set
+and a deploy.
+
+Deviations from the plan as written:
+
+- **Task 1 resolved.** Login is `POST /api/sessions2` with
+  `{stayLoggedIn, email, password, nextUri}`. The `TODO` in Task 3 no longer
+  applies; the committed code has the real endpoint.
+- **`tockifySession_` added**, not in the plan. `tockifyLogin_` returns a cached
+  cookie without knowing the server has expired it, so a probe of
+  `GET /api/subscription-status` runs first — 200 means live, 404 means log in
+  fresh.
+- **`tockifyNotify_` uses `getEffectiveUser`**, not `getActiveUser`, which
+  returns empty in a time-driven trigger and would have sent failure notices
+  nowhere.
+
+---
+
 ## Conventions in this repo
 
 - Tests are `test_*` functions co-located in the `.gs` file they test.
