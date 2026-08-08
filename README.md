@@ -128,6 +128,74 @@ Run `installTockifyTrigger` once from the editor to install the trigger.
 
 ---
 
+## Meetup new-event alerts
+
+Meetup has no usable "new event" notification, and events reach the calendar by
+hand through this web app — so a newly published event can sit unnoticed for
+days. An hourly job watches the groups listed in `MEETUP_GROUPS` and emails
+`MEETUP_NOTIFY_EMAIL` when one of them has published an event that is not yet on
+the calendar.
+
+Both constants are at the top of `src/MeetupService.gs`. Adding a group is
+appending its slug — Meetup event IDs are globally unique rather than per-group,
+so nothing else is per-group:
+
+```js
+var MEETUP_GROUPS = ['vegaustin'];
+```
+
+Events come from Meetup's public iCal feed, `meetup.com/<slug>/events/ical/`,
+which needs no auth and no API key. That is why this doesn't scrape the group
+page through Claude or hold OAuth credentials for Meetup's GraphQL API.
+
+### Deciding what counts as "new"
+
+An event is new when it is in the feed but matches nothing on the calendar.
+Matching runs two rules, either of which is enough:
+
+1. **The RSVP link.** `submitEvent` appends a source link to every event it
+   creates, so most calendar entries carry their Meetup URL. The numeric event
+   ID in that URL is an exact identity.
+2. **Identical title and start time**, as a fallback for entries created
+   directly in Google Calendar with no link at all.
+
+Rule 1 reads the ID from the URL **path**, never the query string. A real entry
+on this calendar reads:
+
+```
+meetup.com/vegaustin/events/313891224/?slug=vegaustin&eventId=307154188
+```
+
+where the query string names a *different* event. Matching on a bare number, on
+"the last number", or on `eventId=` silently pairs the wrong events.
+
+Two link shapes on the calendar yield no ID at all — Meetup's `/ls/click`
+tracking redirects, and group-level `/events/` URLs. Those fall through to rule
+2, and failing that cost one stray email, once.
+
+### Repeat suppression
+
+Notified event IDs are kept in the `MEETUP_NOTIFIED_IDS` script property, so an
+event you are slow to add to the calendar is announced once, not every hour.
+
+That set is pruned to the IDs still in the feed — Meetup doesn't reuse event
+IDs, so an event that has rolled off can't come back. The prune only runs for
+groups that actually fetched: otherwise a single Meetup outage would empty the
+set and the next healthy run would re-announce everything.
+
+### Before installing the trigger
+
+Run `previewMeetupCheck` from the editor. It runs the whole pipeline and logs
+what it *would* send, sending nothing and storing nothing, so you can confirm it
+stays quiet on events already on the calendar. Then run `installMeetupTrigger`
+once, **as the account that owns the script** — a time-driven trigger runs as
+whoever installed it.
+
+If Meetup ever moves the feed, the job emails you rather than failing silently,
+at most once a day.
+
+---
+
 ## Deploy
 
 The web app entry point is declared in `src/appsscript.json` (the `webapp`
@@ -171,6 +239,7 @@ Pure logic runs under Node without touching Google at all:
 
 ```bash
 node tests/run.js FacebookService.gs Extraction.gs RecurrenceService.gs Utilities.gs   # 26 tests
+node tests/run.js MeetupService.gs                                                     # 12 tests
 node tests/calendar.test.js                                                            # 5 tests
 ```
 

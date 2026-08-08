@@ -235,10 +235,16 @@ inspected.
 
 ## Testing
 
-`tests/meetup.test.js`, run under the existing `tests/run.js` harness, which
-loads pure `.gs` files into a `vm` sandbox. Feed parsing and ID extraction are
-pure, so they are covered locally. Cases come from what the real data actually
-contains:
+**Deviation from this design:** tests live as inline `test_*` functions inside
+`src/MeetupService.gs`, run with `node tests/run.js MeetupService.gs`, not in a
+separate `tests/meetup.test.js`. That is the convention the repo already uses
+for pure logic — `Utilities.gs`, `Extraction.gs`, `RecurrenceService.gs` and
+`FacebookService.gs` all carry their own `test_*` functions, and only
+`CalendarService.gs`, which needs an elaborate Calendar stub, gets a file of its
+own. Following the design here would have introduced a second pattern for no
+benefit.
+
+Cases come from what the real data actually contains:
 
 - **iCal line unfolding.** Meetup folds long `DESCRIPTION` values onto
   continuation lines beginning with a space. A parser that reads line-by-line
@@ -258,15 +264,40 @@ the harness's existing rule.
 
 ---
 
-## Known limitation
+## The timezone limitation, resolved
 
-The title+start fallback builds a `Date` from the feed's local time using the
-script timezone, which `appsscript.json` sets to `America/Chicago` — the same
-zone the `vegaustin` feed declares. That is correct for every group in Central
-time.
+This design originally recorded a limitation: the title+start fallback would
+build a `Date` from the feed's local time using the script timezone, so a future
+group outside `America/Chicago` would compute the wrong instant and silently
+degrade to ID-only matching.
 
-A future group in another timezone would compute the wrong instant and silently
-fall back to ID-only matching. Rather than build general timezone handling for a
-case that does not exist yet, the parser asserts the feed's `TZID` and logs a
-warning on mismatch. If a non-Central group is ever added, this is the thing to
-fix.
+Implementation removed it rather than documenting it. The parser keeps each
+event's start as the feed's wall clock plus its `TZID` and never converts to an
+instant. Comparison formats the *calendar* event into the *feed's* timezone
+(`Utilities.formatDate(date, tzid, "yyyyMMdd'T'HHmmss")`) and compares strings.
+That is correct for a group in any timezone, with no offset arithmetic and no
+DST edge cases, and it made the comparison testable under Node — which cannot
+see the Apps Script timezone — by injecting the formatter as a parameter.
+
+No known limitation remains.
+
+---
+
+## Verification
+
+Beyond the unit tests, the whole job was run end to end under Node against the
+real 2026-08-08 Meetup feed and the real 111-event calendar, with the Apps
+Script services stubbed (`UrlFetchApp`, `CalendarApp`, `MailApp`,
+`PropertiesService`, `Utilities.formatDate` backed by `Intl`). Five scenarios,
+all passing:
+
+| Scenario | Expected | Result |
+|---|---|---|
+| Steady state — all 4 feed events already calendared | 0 emails | 0 |
+| One event missing from the calendar | 1 email | 1 |
+| Missing event's calendar entry has no RSVP link (fallback must catch it) | 0 emails | 0 |
+| Three consecutive hourly runs, event still not calendared | 1 email total | 1 |
+| Feed returns 503 after a notification | state survives, 1 error email, second outage throttled | as expected |
+
+The fourth and fifth matter most: they are what prove repeat suppression works
+and that an outage cannot wipe the notified set.
