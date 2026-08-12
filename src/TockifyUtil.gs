@@ -45,6 +45,48 @@ function test_tockifyUtil() {
     }
   });
 
+  // tockifyAddTag_ — merges, never replaces. Re-running a job must be a no-op.
+  var added = tockifyAddTag_({ tags: { 'default': ['Potluck'] } }, AVA_TOCKIFY_TAG);
+  if (added.tags['default'].join(',') !== 'Potluck,' + AVA_TOCKIFY_TAG) {
+    throw new Error('existing tags must be preserved, got ' + JSON.stringify(added));
+  }
+
+  var already = tockifyAddTag_({ tags: { 'default': [AVA_TOCKIFY_TAG] } }, AVA_TOCKIFY_TAG);
+  if (already.tags['default'].length !== 1) {
+    throw new Error('tag must not be duplicated, got ' + JSON.stringify(already));
+  }
+
+  // Non-default tag groups must survive the merge untouched.
+  var other = tockifyAddTag_({ tags: { 'default': [], venue: ['Patio'] } }, AVA_TOCKIFY_TAG);
+  if (!other.tags.venue || other.tags.venue[0] !== 'Patio') {
+    throw new Error('other tag groups must survive, got ' + JSON.stringify(other));
+  }
+
+  // An untagged event has no tagset at all; a malformed one must not throw.
+  [undefined, null, {}, { tags: null }, { tags: { 'default': 'nope' } }].forEach(function (input) {
+    var built = tockifyAddTag_(input, AVA_TOCKIFY_TAG);
+    if (built.tags['default'].join(',') !== AVA_TOCKIFY_TAG) {
+      throw new Error('tockifyAddTag_(' + JSON.stringify(input) + ') -> ' + JSON.stringify(built));
+    }
+  });
+
+  // The input must not be mutated — the caller PUTs the whole group and a
+  // surprise in-place edit is how a "verify it stuck" check passes on a write
+  // that never happened.
+  var original = { tags: { 'default': ['Potluck'] } };
+  tockifyAddTag_(original, AVA_TOCKIFY_TAG);
+  if (original.tags['default'].length !== 1) throw new Error('tockifyAddTag_ must not mutate its input');
+
+  // tockifyHasTag_ — used to verify the write stuck
+  if (!tockifyHasTag_({ tags: { 'default': ['x', AVA_TOCKIFY_TAG] } }, AVA_TOCKIFY_TAG)) {
+    throw new Error('tockifyHasTag_ should find a present tag');
+  }
+  [undefined, null, {}, { tags: {} }, { tags: { 'default': [] } }, { tags: { 'default': ['x'] } }].forEach(function (input) {
+    if (tockifyHasTag_(input, AVA_TOCKIFY_TAG)) {
+      throw new Error('tockifyHasTag_(' + JSON.stringify(input) + ') should be false');
+    }
+  });
+
   // tockifyImageName_ — Tockify names the library entry from this
   var nameCases = [
     ['https://scontent.example.com/v/t39/758244966_1023.webp?stp=dst&oh=abc',
@@ -186,6 +228,45 @@ function tockifyAvaHost_(url) {
   if (/(?:^|[\/.])meetup\.com\/ls\/click/i.test(s)) return 'unknown';
 
   return 'no';
+}
+
+/**
+ * A tagset with `tag` present, preserving every tag already on the event.
+ *
+ * Returns a new object rather than editing in place: the caller hands the whole
+ * event group back to Tockify and then re-reads the response to confirm the
+ * write stuck. If this mutated the input, that check would compare the saved
+ * record against an object it had already modified and pass on a write that
+ * never happened.
+ *
+ * Shape comes from the live API: {tags: {default: [...]}}. An untagged event
+ * has no tagset at all, so every level is rebuilt defensively.
+ *
+ * @param {Object|null|undefined} tagset
+ * @param {string} tag
+ * @returns {Object} a new tagset
+ */
+function tockifyAddTag_(tagset, tag) {
+  var tags = (tagset && tagset.tags && typeof tagset.tags === 'object') ? tagset.tags : {};
+  var list = (tags['default'] instanceof Array) ? tags['default'] : [];
+
+  var next = {};
+  Object.keys(tags).forEach(function (k) { next[k] = tags[k]; });
+  next['default'] = (list.indexOf(tag) === -1) ? list.concat([tag]) : list;
+
+  return { tags: next };
+}
+
+/**
+ * Whether a tagset carries a tag. Used to verify a write stuck — this API
+ * answers a rejected field with HTTP 200, so a status code proves nothing.
+ * @param {Object|null|undefined} tagset
+ * @param {string} tag
+ * @returns {boolean}
+ */
+function tockifyHasTag_(tagset, tag) {
+  var list = tagset && tagset.tags && tagset.tags['default'];
+  return (list instanceof Array) && list.indexOf(tag) !== -1;
 }
 
 /**
