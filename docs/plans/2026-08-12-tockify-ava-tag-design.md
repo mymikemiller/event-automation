@@ -2,8 +2,8 @@
 
 **Date:** 2026-08-12
 **Status:** Designed, not implemented. The tag shape and the short-link redirect
-were verified against live services on 2026-08-12. The authenticated eventgroup
-shape has **not** been verified — see [Open items](#open-items).
+were verified against live services on 2026-08-12, including the authenticated
+eventgroup record — see [The tag's shape](#the-tags-shape).
 
 ---
 
@@ -88,8 +88,24 @@ redirect loop in an unattended 5-minute job is worse than a missed tag.
 
 ## The tag's shape
 
-From the public API for a tagged event
-(`GET /api/ngevent?calname=austin.vegan.events&…`):
+**Resolved by live probe on 2026-08-12** (`test_tockifyEventGroupShape_live`),
+against the authenticated **eventgroup** record — the one the job actually GETs
+and PUTs. Tags are a plain top-level array of strings:
+
+```json
+{ "calid": "…", "uid": "…", "title": "…",
+  "tags": ["Austin-Vegan-Association"] }
+```
+
+The probe walked the whole record for the tag string and found it at exactly one
+path, `tags[0]`, by an `===` comparison — so these are bare strings, not objects.
+There is no `tagset` key anywhere on the record, and no `content` wrapper at all:
+`group.tagset` and `group.content.tagset` both came back `undefined`.
+
+### The trap: the public API's shape is not the write shape
+
+The public read-only API (`GET /api/ngevent?calname=austin.vegan.events&…`)
+nests the same data three levels deeper, under a `content` wrapper:
 
 ```json
 "content": {
@@ -97,9 +113,17 @@ From the public API for a tagged event
 }
 ```
 
+This is the shape anyone reading the public API — or its documentation — would
+copy, and it is **not what to write**. It is the same split already known for the
+image, where the public response carries `content.imageSets` while the eventgroup
+record takes `imageIdNg` at the top level. Sending a nested `tagset` costs
+nothing visible: this server answers a body field it does not recognise with a
+silent HTTP 200 (see `imageSets` vs `imageIdNg` in `tockifySetEventImage_`), so
+the write would look accepted and change nothing.
+
 Tags merge rather than replace: existing tags are preserved and
 `Austin-Vegan-Association` is appended only when absent, so re-running a job is
-a no-op. A missing or malformed `tagset` is built from scratch.
+a no-op. A missing or malformed `tags` becomes a fresh one-element array.
 
 ---
 
@@ -171,12 +195,17 @@ Pure helpers get cases in `test_tockifyUtil`, following the existing pattern in
 - `tockifyAvaHost_` — canonical AVA URL with and without trailing slash; the
   `?slug=vegaustin&eventId=…` mispair trap; another group's slug; `meetu.ps`;
   `meetup.com/ls/click`; a Facebook URL; empty; null; `undefined`
-- tag merge — absent → appended; already present → unchanged; unrelated tags
-  preserved; missing `tagset` → built; malformed `tagset` → built
+- tag merge — absent → appended; already present → unchanged (asserted on the
+  *value*, not the length); unrelated tags preserved; missing or malformed `tags`
+  → a fresh one-element array; the input never mutated and never shared by the
+  result, on both the tag-absent and tag-already-present branches
+- `tockifyHasTag_` — false for a **string** carrying the tag as a substring. A
+  bare `indexOf` returns a non-negative index there and reports a write that
+  never landed as a success
 
 Live tests, editor-run, matching `test_tockifyLogin_live`:
 
-- `test_tockifyEventGroupShape_live` — the shape probe below
+- `test_tockifyEventGroupShape_live` — the shape probe, run 2026-08-12
 - an end-to-end tag apply against a scratch event
 
 ---
@@ -195,17 +224,19 @@ Live tests, editor-run, matching `test_tockifyLogin_live`:
 
 ## Open items
 
-- **Where `tagset` sits on the authenticated eventgroup record is unverified.**
-  The public `ngevent` shape nests it under `content`, but the eventgroup shape
-  is flattened — `tockifySetEventImage_` writes `group.imageIdNg` and reads
-  `saved.imageSets` at the top level, where the public shape has both under
-  `content`. Top-level `tagset` is therefore the strong expectation, but this
-  server answers a wrong body shape with `404 Not found` rather than a
-  validation error (see `tockifyRegisterImage_`), and writing the wrong field
-  returns a silent 200 (see `imageSets` vs `imageIdNg`). Guessing here fails
-  quietly. `test_tockifyEventGroupShape_live` GETs a known-tagged eventgroup and
-  logs where `tagset` actually lives; the implementation is written against what
-  it reports.
+- ~~**Where `tagset` sits on the authenticated eventgroup record is
+  unverified.**~~ **Resolved by live probe on 2026-08-12** — see
+  [The tag's shape](#the-tags-shape). The answer was **neither candidate this
+  entry predicted.** It expected the field to be named `tagset`, either at the
+  top level (the strong expectation, by analogy with `imageIdNg`) or nested under
+  `content` (as the public API has it). It is neither: there is no `tagset` key
+  on the record at all. The field is differently named *and* differently shaped —
+  a flat top-level `tags` array of bare strings, `group.tags = ["…"]`, with no
+  per-group nesting and no `default` key. Both helpers were built against the
+  predicted nesting first and had to be rewritten, which is the case for probing
+  rather than reasoning by analogy: the analogy correctly predicted "flattened"
+  and still got the field wrong, and writing the wrong field here returns a
+  silent 200 rather than an error.
 - **Editor-run required.** `clasp run` does not work on this project (web app,
   not an API executable), so the live probes are run by hand from the Apps
   Script editor.

@@ -163,46 +163,81 @@ git commit -m "feat: classify whether an event URL is hosted by Austin Vegan Ass
 
 **Step 1: Write the failing test**
 
+The shape below is the one Task 3's probe confirmed live on 2026-08-12 against
+the authenticated eventgroup record: a **flat top-level array of strings**,
+`group.tags = ["Austin-Vegan-Association"]`. Do **not** write the public
+`ngevent` API's nested `content.tagset.tags.default` — see the design doc's
+["The tag's shape"](2026-08-12-tockify-ava-tag-design.md#the-tags-shape). Build
+every fixture inside the `.gs` file: `instanceof Array` is realm-sensitive under
+the `vm` runner, so a host-realm array silently takes the malformed path.
+
 Add to `test_tockifyUtil`, after the `tockifyAvaHost_` block:
 
 ```js
   // tockifyAddTag_ — merges, never replaces. Re-running a job must be a no-op.
-  var added = tockifyAddTag_({ tags: { 'default': ['Potluck'] } }, AVA_TOCKIFY_TAG);
-  if (added.tags['default'].join(',') !== 'Potluck,' + AVA_TOCKIFY_TAG) {
+  var added = tockifyAddTag_(['Potluck'], AVA_TOCKIFY_TAG);
+  if (added.join(',') !== 'Potluck,' + AVA_TOCKIFY_TAG) {
     throw new Error('existing tags must be preserved, got ' + JSON.stringify(added));
   }
 
-  var already = tockifyAddTag_({ tags: { 'default': [AVA_TOCKIFY_TAG] } }, AVA_TOCKIFY_TAG);
-  if (already.tags['default'].length !== 1) {
-    throw new Error('tag must not be duplicated, got ' + JSON.stringify(already));
+  // The VALUE, not the length: a length of 2 is equally consistent with the tag
+  // having replaced 'y', so length alone pins nothing about what came back.
+  var already = tockifyAddTag_(['x', AVA_TOCKIFY_TAG, 'y'], AVA_TOCKIFY_TAG);
+  if (already.join(',') !== 'x,' + AVA_TOCKIFY_TAG + ',y') {
+    throw new Error('an already-present tag must leave the list unchanged, got ' + JSON.stringify(already));
   }
 
-  // Non-default tag groups must survive the merge untouched.
-  var other = tockifyAddTag_({ tags: { 'default': [], venue: ['Patio'] } }, AVA_TOCKIFY_TAG);
-  if (!other.tags.venue || other.tags.venue[0] !== 'Patio') {
-    throw new Error('other tag groups must survive, got ' + JSON.stringify(other));
-  }
-
-  // An untagged event has no tagset at all; a malformed one must not throw.
-  [undefined, null, {}, { tags: null }, { tags: { 'default': 'nope' } }].forEach(function (input) {
+  // Malformed or absent input must not throw, and must come back as a fresh
+  // one-element array. The `instanceof Array` check on the result is what fails
+  // by name rather than by TypeError when a string input is passed through:
+  // 'Austin-Vegan-Association'.slice() is a string that already "contains" the
+  // tag, so it survives the indexOf guard untouched.
+  [undefined, null, {}, 'nope', 123, AVA_TOCKIFY_TAG].forEach(function (input) {
     var built = tockifyAddTag_(input, AVA_TOCKIFY_TAG);
-    if (built.tags['default'].join(',') !== AVA_TOCKIFY_TAG) {
-      throw new Error('tockifyAddTag_(' + JSON.stringify(input) + ') -> ' + JSON.stringify(built));
+    if (!(built instanceof Array) || built.join(',') !== AVA_TOCKIFY_TAG) {
+      throw new Error('tockifyAddTag_(' + JSON.stringify(input) + ') -> ' + JSON.stringify(built) +
+        ', want a fresh [' + AVA_TOCKIFY_TAG + ']');
     }
   });
 
   // The input must not be mutated — the caller PUTs the whole group and a
   // surprise in-place edit is how a "verify it stuck" check passes on a write
-  // that never happened.
-  var original = { tags: { 'default': ['Potluck'] } };
+  // that never happened. Both branches: only the tag-absent one appends.
+  var original = ['Potluck'];
   tockifyAddTag_(original, AVA_TOCKIFY_TAG);
-  if (original.tags['default'].length !== 1) throw new Error('tockifyAddTag_ must not mutate its input');
+  if (original.join(',') !== 'Potluck') {
+    throw new Error('tockifyAddTag_ must not mutate its input, got ' + JSON.stringify(original));
+  }
+
+  var noop = [AVA_TOCKIFY_TAG, 'Potluck'];
+  tockifyAddTag_(noop, AVA_TOCKIFY_TAG);
+  if (noop.join(',') !== AVA_TOCKIFY_TAG + ',Potluck') {
+    throw new Error('tockifyAddTag_ must not mutate its input on the no-op branch, got ' + JSON.stringify(noop));
+  }
+
+  // Sharing the array is invisible to the two checks above on the no-op branch —
+  // nothing is appended there, so the input reads back correct either way. Push
+  // into the RESULT to catch it, on both branches.
+  var srcAbsent = ['Potluck'];
+  tockifyAddTag_(srcAbsent, AVA_TOCKIFY_TAG).push('x');
+  if (srcAbsent.join(',') !== 'Potluck') {
+    throw new Error('the result must share no array with the input (tag absent), got ' + JSON.stringify(srcAbsent));
+  }
+
+  var srcPresent = [AVA_TOCKIFY_TAG];
+  tockifyAddTag_(srcPresent, AVA_TOCKIFY_TAG).push('x');
+  if (srcPresent.join(',') !== AVA_TOCKIFY_TAG) {
+    throw new Error('the result must share no array with the input (tag present), got ' + JSON.stringify(srcPresent));
+  }
 
   // tockifyHasTag_ — used to verify the write stuck
-  if (!tockifyHasTag_({ tags: { 'default': ['x', AVA_TOCKIFY_TAG] } }, AVA_TOCKIFY_TAG)) {
-    throw new Error('tockifyHasTag_ should find a present tag');
+  if (!tockifyHasTag_(['x', AVA_TOCKIFY_TAG, 'y'], AVA_TOCKIFY_TAG)) {
+    throw new Error('tockifyHasTag_ should find a present tag among others');
   }
-  [undefined, null, {}, { tags: {} }, { tags: { 'default': [] } }, { tags: { 'default': ['x'] } }].forEach(function (input) {
+  // The last two entries are the ones that matter: a string carrying the tag as
+  // a substring makes a bare indexOf return a non-negative index and report a
+  // write that never landed as successful.
+  [undefined, null, [], ['x'], {}, AVA_TOCKIFY_TAG, 'tags=' + AVA_TOCKIFY_TAG + ';'].forEach(function (input) {
     if (tockifyHasTag_(input, AVA_TOCKIFY_TAG)) {
       throw new Error('tockifyHasTag_(' + JSON.stringify(input) + ') should be false');
     }
@@ -218,42 +253,57 @@ Expected: `FAIL test_tockifyUtil` with `tockifyAddTag_ is not defined`
 
 ```js
 /**
- * A tagset with `tag` present, preserving every tag already on the event.
+ * The event group's tag list with `tag` present, preserving every tag already
+ * on it.
  *
- * Returns a new object rather than editing in place: the caller hands the whole
- * event group back to Tockify and then re-reads the response to confirm the
- * write stuck. If this mutated the input, that check would compare the saved
- * record against an object it had already modified and pass on a write that
- * never happened.
+ * Shape confirmed by live probe on 2026-08-12 (test_tockifyEventGroupShape_live)
+ * against the authenticated **eventgroup** record — the one we GET and PUT. Tags
+ * are a plain top-level array of strings:
  *
- * Shape comes from the live API: {tags: {default: [...]}}. An untagged event
- * has no tagset at all, so every level is rebuilt defensively.
+ *   group.tags = ["Austin-Vegan-Association"]
  *
- * @param {Object|null|undefined} tagset
+ * The public `ngevent` API nests the same data as
+ * content.tagset.tags.default, and that is NOT what to write. Reading the public
+ * response and copying its shape is the trap here: this server answers a body it
+ * does not recognise with a silent 200 (see `imageSets` vs `imageIdNg` on
+ * tockifySetEventImage_), so a nested tagset would look like it saved and
+ * quietly change nothing. The probe found no `tagset` key anywhere on the
+ * eventgroup record, and no `content` wrapper at all.
+ *
+ * The `.slice()` is unconditional, so the result never shares an array with the
+ * input — not even on the branch where the tag is already there and nothing is
+ * appended. The caller PUTs the whole record and then verifies against the
+ * freshly parsed response; a result that shared the caller's array is how that
+ * check passes on a write that never happened.
+ *
+ * @param {Array|null|undefined} tags - group.tags, absent on an untagged event
  * @param {string} tag
- * @returns {Object} a new tagset
+ * @returns {Array} a new array
  */
-function tockifyAddTag_(tagset, tag) {
-  var tags = (tagset && tagset.tags && typeof tagset.tags === 'object') ? tagset.tags : {};
-  var list = (tags['default'] instanceof Array) ? tags['default'] : [];
-
-  var next = {};
-  Object.keys(tags).forEach(function (k) { next[k] = tags[k]; });
-  next['default'] = (list.indexOf(tag) === -1) ? list.concat([tag]) : list;
-
-  return { tags: next };
+function tockifyAddTag_(tags, tag) {
+  var list = (tags instanceof Array) ? tags.slice() : [];
+  if (list.indexOf(tag) === -1) list.push(tag);
+  return list;
 }
 
 /**
- * Whether a tagset carries a tag. Used to verify a write stuck — this API
- * answers a rejected field with HTTP 200, so a status code proves nothing.
- * @param {Object|null|undefined} tagset
+ * Whether an event group's tag list carries a tag. Used to verify a write stuck
+ * — this API answers a rejected field with HTTP 200, so a status code proves
+ * nothing and this check is the only thing between a silent failure and a
+ * correct report.
+ *
+ * The `instanceof Array` is load-bearing, not a type-safety nicety: given a
+ * string `tags` that merely contains the tag as a substring, a bare indexOf
+ * returns a non-negative index and reports a write that never landed as a
+ * success. That is exactly the value a server rejecting the array shape could
+ * hand back.
+ *
+ * @param {Array|null|undefined} tags - group.tags
  * @param {string} tag
  * @returns {boolean}
  */
-function tockifyHasTag_(tagset, tag) {
-  var list = tagset && tagset.tags && tagset.tags['default'];
-  return (list instanceof Array) && list.indexOf(tag) !== -1;
+function tockifyHasTag_(tags, tag) {
+  return (tags instanceof Array) && tags.indexOf(tag) !== -1;
 }
 ```
 
@@ -266,14 +316,14 @@ Expected: `1 passed, 0 failed`
 
 ```bash
 git add src/TockifyUtil.gs
-git commit -m "feat: add tagset merge helpers for Tockify events"
+git commit -m "feat: add tag merge helpers for Tockify events"
 ```
 
 ---
 
-## Task 3: Probe the live eventgroup shape — STOP, USER-RUN
+## Task 3: Probe the live eventgroup shape — STOP, USER-RUN — **DONE 2026-08-12**
 
-**This task blocks Task 5 and cannot be completed by you alone.**
+**This task blocked Task 5 and could not be completed without the user.** It has been run; the answer is recorded in Step 4 below and is already applied to Tasks 2 and 5.
 
 The public `ngevent` API nests the tag under `content.tagset.tags.default`. The authenticated **eventgroup** record appears to be flattened — `tockifySetEventImage_` (`src/TockifyService.gs:233`) writes `group.imageIdNg` and reads `saved.imageSets` at the top level, where the public shape has both under `content`. Top-level `tagset` is the strong expectation, but this API returns `404 Not found` for a wrong body shape and a silent `200` for a wrong field. Guessing fails quietly.
 
@@ -322,11 +372,28 @@ Stop here and ask the user to:
 3. Click **Run**
 4. Paste back the log lines from **View → Executions**
 
-**Step 4: Record the answer**
+**Step 4: The answer — run 2026-08-12**
 
-Write the observed shape into the JSDoc of `tockifyUpdateEventGroup_` in Task 5, and correct the `Open items` section of `docs/plans/2026-08-12-tockify-ava-tag-design.md` to state the verified shape rather than the expectation.
+Neither candidate above was right. There is no `tagset` key on the eventgroup record at all, and no `content` wrapper. Tags are a **flat top-level array of bare strings**:
 
-If `tagset` turns out to live under `content`, Task 5's implementation changes from `group.tagset` to `group.content.tagset` (and the read-back from `saved.tagset` to `saved.content.tagset`) — nothing else in the plan moves, because `tockifyAddTag_` is shape-independent by design.
+```
+HTTP 200
+body is object{19}
+top-level: calid:string, uid:string, title:string, description:string, attachments:array[0],
+           tags:array[1], where:object{1}, recurrence:object{1}, exdates:array[0],
+           rdates:array[0], mods:array[0], version:number, imageIdNg:string,
+           imageSets:array[1], externalId:string, priority:number, status:object{1},
+           externalVLoc:boolean, performers:array[0]
+group.tagset = undefined
+group.content && group.content.tagset = undefined
+paths holding "Austin-Vegan-Association": tags[0]
+```
+
+So the write field is `group.tags`, an `Array` of strings — the walk used an exact `===` string comparison and landed on `tags[0]`, so these are not objects. The public API's `content.tagset.tags.default` is a *read-only* projection and must not be written back.
+
+This is what the `imageIdNg` analogy got only half right: it correctly predicted "flattened", and still got the field name and the nesting wrong. Tasks 2 and 5 are written against the probe, not the analogy.
+
+`tockifyAddTag_`/`tockifyHasTag_` were first built against the nested shape and had to be reworked — the plan above now carries the corrected versions.
 
 **Step 5: Commit**
 
@@ -527,7 +594,7 @@ The live test runs in Task 9 alongside the end-to-end check — batching them sa
 
 ## Task 5: One GET/PUT for image and tag
 
-**Depends on Task 3's answer.** Use `group.tagset` below only if the probe confirmed top-level; otherwise substitute `group.content.tagset` and `saved.content.tagset`.
+**Task 3's answer is applied below.** The probe (2026-08-12) found tags in a flat top-level array of strings, `group.tags`. There is no `tagset` key on this record — do not reintroduce `group.tagset` or `group.content.tagset` from the public API's shape.
 
 **Files:**
 - Modify: `src/TockifyService.gs:258-280` — replace `tockifySetEventImage_` (was `233-255`; Task 4 added the live test and two functions above it)
@@ -546,6 +613,11 @@ The live test runs in Task 9 alongside the end-to-end check — batching them sa
  * `imageIdNg`, which is also why the read-back below checks `imageSets` and not
  * the field that was written.
  *
+ * `tags` is the write field for the tag: a flat top-level array of strings,
+ * confirmed by live probe on 2026-08-12 against this same record. The public
+ * ngevent API's content.tagset.tags.default is a read-only projection and would
+ * be accepted with a silent 200 while changing nothing.
+ *
  * @param {string} cookie
  * @param {string} uid
  * @param {{imageSetId: string=, addTag: string=}} changes
@@ -561,7 +633,7 @@ function tockifyUpdateEventGroup_(cookie, uid, changes) {
 
   var group = JSON.parse(getRes.getContentText());
   if (changes.imageSetId) group.imageIdNg = changes.imageSetId;
-  if (changes.addTag) group.tagset = tockifyAddTag_(group.tagset, changes.addTag);
+  if (changes.addTag) group.tags = tockifyAddTag_(group.tags, changes.addTag);
 
   var putRes = tockifyFetch_(path, cookie, { method: 'put', payload: group });
   if (putRes.getResponseCode() !== 200) {
@@ -573,8 +645,8 @@ function tockifyUpdateEventGroup_(cookie, uid, changes) {
   if (changes.imageSetId && (!saved.imageSets || !saved.imageSets.length)) {
     return { error: 'image did not stick — imageSets came back empty' };
   }
-  if (changes.addTag && !tockifyHasTag_(saved.tagset, changes.addTag)) {
-    return { error: 'tag did not stick — "' + changes.addTag + '" absent from the saved tagset' };
+  if (changes.addTag && !tockifyHasTag_(saved.tags, changes.addTag)) {
+    return { error: 'tag did not stick — "' + changes.addTag + '" absent from the saved tags' };
   }
   return { success: true };
 }
