@@ -82,7 +82,7 @@ function test_tockifyUtil() {
   // that never happened.
   var original = { tags: { 'default': ['Potluck'] } };
   tockifyAddTag_(original, AVA_TOCKIFY_TAG);
-  if (original.tags['default'].length !== 1) throw new Error('tockifyAddTag_ must not mutate its input');
+  if (original.tags['default'].join(',') !== 'Potluck') throw new Error('tockifyAddTag_ must not mutate its input');
 
   var noop = { tags: { 'default': [AVA_TOCKIFY_TAG], venue: ['Patio'] } };
   tockifyAddTag_(noop, AVA_TOCKIFY_TAG);
