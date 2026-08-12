@@ -16,14 +16,22 @@ function test_tockifyIsAvaEvent_live() {
   // Verified 2026-08-12: this short link 302s to
   // www.meetup.com/vegaustin/events/315879624/
   var short = tockifyIsAvaEvent_('https://meetu.ps/e/Qbwn8/1qvFq/i');
-  if (short.error) throw new Error(short.error);
+  if (short.error) {
+    throw new Error('short-link resolution failed — an HTTP 404 here likely means the ' +
+      'fixture event was deleted, not that the code broke: ' + short.error);
+  }
   if (!short.isAva) throw new Error('short link to an AVA event should resolve to isAva');
 
-  // No fetch should be needed for these two.
+  // These two must be decided offline. Checking .error is what makes that an
+  // assertion rather than a comment: an {error} result has isAva === undefined,
+  // so the isAva checks below pass just as happily on a URL that went to the
+  // network and failed there.
   var canonical = tockifyIsAvaEvent_('https://www.meetup.com/vegaustin/events/315879624/');
+  if (canonical.error) throw new Error('canonical URL should need no fetch: ' + canonical.error);
   if (!canonical.isAva) throw new Error('canonical AVA URL should be isAva');
 
   var other = tockifyIsAvaEvent_('https://www.facebook.com/events/1234567890/');
+  if (other.error) throw new Error('a Facebook URL should need no fetch: ' + other.error);
   if (other.isAva) throw new Error('a Facebook URL is not an AVA Meetup event');
 
   Logger.log('test_tockifyIsAvaEvent_live: PASSED');
@@ -278,22 +286,29 @@ function tockifySetEventImage_(cookie, uid, imageSetId) {
  * the canonical www.meetup.com URL in a single 302, and an unbounded redirect
  * chase inside an unattended 5-minute job is a worse failure than a missed tag.
  *
+ * Nothing here throws — every failure comes back as {error}. Reading the
+ * response lives in tockifyRedirectTarget_ (TockifyUtil.gs), where it is
+ * unit-testable without a network.
+ *
  * @param {string} url
  * @returns {{url: string}|{error: string}}
  */
 function tockifyResolveRedirect_(url) {
-  var res = UrlFetchApp.fetch(url, {
-    method: 'get',
-    followRedirects: false,
-    muteHttpExceptions: true
-  });
+  var res;
+  try {
+    res = UrlFetchApp.fetch(url, {
+      method: 'get',
+      followRedirects: false,
+      muteHttpExceptions: true
+    });
+  } catch (e) {
+    // muteHttpExceptions suppresses error STATUSES; DNS, TLS and timeout still
+    // throw. This dials a third-party shortener named in a human-pasted URL, and
+    // an escaped throw skips the give-up counter and wedges the queue.
+    return { error: 'fetch failed for ' + url + ': ' + e.message };
+  }
 
-  var headers = res.getAllHeaders();
-  var loc = headers['Location'] || headers['location'];
-  if (loc instanceof Array) loc = loc[0];
-  if (!loc) return { error: 'no Location header (HTTP ' + res.getResponseCode() + ')' };
-
-  return { url: String(loc) };
+  return tockifyRedirectTarget_(res.getAllHeaders(), url, res.getResponseCode());
 }
 
 /**

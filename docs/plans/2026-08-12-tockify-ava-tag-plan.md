@@ -20,8 +20,10 @@
 
 **Where code goes.** `tests/run.js` loads a `.gs` file into a bare Node `vm` context with only `console`, `Logger` and `Session` shimmed. A file that references `UrlFetchApp`, `PropertiesService` or `CacheService` at call time is fine, but a file whose *tests* reach them is not. So:
 
-- `TockifyUtil.gs` — pure only. Runs under Node. New classifier and tag-merge helpers go here.
+- `TockifyUtil.gs` — pure only. Runs under Node. New classifier, tag-merge and redirect-header helpers go here — including `tockifyRedirectTarget_` (Task 4), which parses a `Location` header away from the network for the same reason `tockifySessionCookie_` does.
 - `TockifyService.gs` — network. Its tests are all `*_live`.
+
+Split network functions on that seam: the `UrlFetchApp` call and its `try`/`catch` stay in `TockifyService.gs`, and everything that merely reads the response moves next door where a Node test can reach it. A shape that only appears against a live third-party server is exactly the shape a hand-run `*_live` test will not catch.
 
 **Test conventions.** `TockifyUtil.gs` has exactly one Node-run test function, `test_tockifyUtil`, which asserts by `throw new Error(...)`. Add cases to it; do not create a second function. There is no assertion library — the pattern is `if (got !== want) throw new Error('helper(input) -> ' + got + ', want ' + want);`.
 
@@ -338,11 +340,63 @@ git commit -m "test: probe where tagset lives on a Tockify event group"
 ## Task 4: Resolve shortened Meetup links
 
 **Files:**
+- Modify: `src/TockifyUtil.gs` (new `tockifyRedirectTarget_`; cases in `test_tockifyUtil`)
 - Modify: `src/TockifyService.gs`
 
-There is no Node-runnable test here — this is network code, so it gets a `*_live` test like `test_tockifyUploadImage_live`.
+The fetch itself gets a `*_live` test like `test_tockifyUploadImage_live`. Reading the response does **not** — it is pure, so it goes in `TockifyUtil.gs` and is unit-tested there. Do not inline the header parsing into the resolver: every interesting case (relative `Location`, repeated header, a 200 carrying a stale `Location`) is one that only a live third-party server produces, which is precisely the set a hand-run live test never exercises.
 
-**Step 1: Write the implementation**
+**Step 1: Write the pure header parser in `src/TockifyUtil.gs`**
+
+Place it after `tockifyAvaHost_`.
+
+```js
+/**
+ * The absolute URL a redirect response points at.
+ *
+ * Three traps, each of which fails silently rather than loudly:
+ *   - UrlFetchApp does not normalise header case, and gives an array when a
+ *     header repeats, exactly as it does for Set-Cookie.
+ *   - A 200 carrying a stale Location is not a redirect. Following it reports a
+ *     host the server never redirected to.
+ *   - A relative Location is legal HTTP. Handed to tockifyAvaHost_ unresolved it
+ *     matches nothing and answers 'no', which is indistinguishable from a real
+ *     "not AVA" — so it must be resolved, and refused if it still cannot be.
+ *     Resolving beats refusing: a protocol-relative //www.meetup.com/... URL
+ *     classifies correctly the moment it has a scheme, and rejecting it outright
+ *     would turn a right answer into an error.
+ *
+ * @param {Object|null} headers - from HTTPResponse.getAllHeaders()
+ * @param {string} requestUrl - what was fetched, the base for a relative Location
+ * @param {number} statusCode
+ * @returns {{url: string}|{error: string}}
+ */
+function tockifyRedirectTarget_(headers, requestUrl, statusCode) {
+  if (!(statusCode >= 300 && statusCode < 400)) {
+    return { error: 'not a redirect (HTTP ' + statusCode + ')' };
+  }
+
+  var loc = headers && (headers['Location'] || headers['location']);
+  if (loc instanceof Array) loc = loc[0];
+  if (!loc) return { error: 'redirect with no Location header (HTTP ' + statusCode + ')' };
+  loc = String(loc);
+
+  if (loc.indexOf('//') === 0) {
+    // Scheme-relative. Every host in scope is https, and upgrading is the safe
+    // direction to guess wrong in.
+    loc = 'https:' + loc;
+  } else if (loc.charAt(0) === '/') {
+    var origin = String(requestUrl).match(/^(https?:\/\/[^\/?#]+)/i);
+    if (origin) loc = origin[1] + loc;
+  }
+  if (!/^https?:\/\//i.test(loc)) return { error: 'unresolvable Location: ' + loc };
+
+  return { url: loc };
+}
+```
+
+Add cases to `test_tockifyUtil` covering: absolute, lowercase header key, array-valued header, protocol-relative, path-relative against `meetup.com/ls/click` (the case that actually recovers a canonical URL) and against the shortener, 307/308, plus the error table — 200-with-Location, 404, 302-without-Location, empty string, empty array, null headers, a non-absolute leftover, and a `javascript:` scheme. Build every fixture inside the `.gs` file: `instanceof Array` is realm-sensitive under the `vm` runner (see `tests/run.js`).
+
+**Step 2: Write the fetch in `src/TockifyService.gs`**
 
 ```js
 /**
@@ -352,24 +406,37 @@ There is no Node-runnable test here — this is network code, so it gets a `*_li
  * the canonical www.meetup.com URL in a single 302, and an unbounded redirect
  * chase inside an unattended 5-minute job is a worse failure than a missed tag.
  *
+ * Nothing here throws — every failure comes back as {error}. Reading the
+ * response lives in tockifyRedirectTarget_ (TockifyUtil.gs), where it is
+ * unit-testable without a network.
+ *
  * @param {string} url
  * @returns {{url: string}|{error: string}}
  */
 function tockifyResolveRedirect_(url) {
-  var res = UrlFetchApp.fetch(url, {
-    method: 'get',
-    followRedirects: false,
-    muteHttpExceptions: true
-  });
+  var res;
+  try {
+    res = UrlFetchApp.fetch(url, {
+      method: 'get',
+      followRedirects: false,
+      muteHttpExceptions: true
+    });
+  } catch (e) {
+    // muteHttpExceptions suppresses error STATUSES; DNS, TLS and timeout still
+    // throw. This dials a third-party shortener named in a human-pasted URL, and
+    // an escaped throw skips the give-up counter and wedges the queue.
+    return { error: 'fetch failed for ' + url + ': ' + e.message };
+  }
 
-  var headers = res.getAllHeaders();
-  var loc = headers['Location'] || headers['location'];
-  if (loc instanceof Array) loc = loc[0];
-  if (!loc) return { error: 'no Location header (HTTP ' + res.getResponseCode() + ')' };
-
-  return { url: String(loc) };
+  return tockifyRedirectTarget_(res.getAllHeaders(), url, res.getResponseCode());
 }
+```
 
+The `try`/`catch` is not optional and is not defensive padding. `muteHttpExceptions` suppresses HTTP error *statuses* only; DNS, TLS and timeout failures still throw. Task 6 puts image and tag in a single GET/PUT that runs *after* classification, so a throw here means the PUT never happens and **the image is never applied** — catching it further up in `processTockifyQueue_` would send an email but still leave the event unstamped. Worse, an escaped throw skips `job.tries++` and `tockifyShouldGiveUp_` entirely, so one unresolvable host re-runs every five minutes forever, re-uploading images for every job ahead of it, with no email and no give-up. Recovering needs the script property cleared by hand. `meetupFetchGroupEvents_` (`src/MeetupService.gs:22-34`) is the same shape.
+
+**Step 3: Write the classifier entry point in `src/TockifyService.gs`**
+
+```js
 /**
  * Whether a submitted event URL is an AVA-hosted Meetup event, paying for a
  * redirect fetch only when the URL is a shortener.
@@ -397,7 +464,7 @@ function tockifyIsAvaEvent_(sourceUrl) {
 }
 ```
 
-**Step 2: Write the live test**
+**Step 4: Write the live test**
 
 Add near the other `*_live` tests at the top of `src/TockifyService.gs`:
 
@@ -406,31 +473,46 @@ function test_tockifyIsAvaEvent_live() {
   // Verified 2026-08-12: this short link 302s to
   // www.meetup.com/vegaustin/events/315879624/
   var short = tockifyIsAvaEvent_('https://meetu.ps/e/Qbwn8/1qvFq/i');
-  if (short.error) throw new Error(short.error);
+  if (short.error) {
+    throw new Error('short-link resolution failed — an HTTP 404 here likely means the ' +
+      'fixture event was deleted, not that the code broke: ' + short.error);
+  }
   if (!short.isAva) throw new Error('short link to an AVA event should resolve to isAva');
 
-  // No fetch should be needed for these two.
+  // These two must be decided offline. Checking .error is what makes that an
+  // assertion rather than a comment: an {error} result has isAva === undefined,
+  // so the isAva checks below pass just as happily on a URL that went to the
+  // network and failed there.
   var canonical = tockifyIsAvaEvent_('https://www.meetup.com/vegaustin/events/315879624/');
+  if (canonical.error) throw new Error('canonical URL should need no fetch: ' + canonical.error);
   if (!canonical.isAva) throw new Error('canonical AVA URL should be isAva');
 
   var other = tockifyIsAvaEvent_('https://www.facebook.com/events/1234567890/');
+  if (other.error) throw new Error('a Facebook URL should need no fetch: ' + other.error);
   if (other.isAva) throw new Error('a Facebook URL is not an AVA Meetup event');
 
   Logger.log('test_tockifyIsAvaEvent_live: PASSED');
 }
 ```
 
-**Step 3: Verify the Node suite still passes**
+The two `.error` checks are load-bearing, not belt-and-braces. `{error: ...}` has `isAva === undefined`, which is falsy, so `if (other.isAva)` passes on an error result — the offline-only claim is asserted by the `.error` line and by nothing else. Measured: regress `tockifyAvaHost_` so the Facebook URL returns `'unknown'` and the version without these two lines fetches `facebook.com` over the network and still logs `PASSED`.
 
-The new code lives in `TockifyService.gs`, which is not Node-loadable, so this only confirms nothing regressed:
+**Step 5: Verify the Node suite**
+
+`tockifyRedirectTarget_` and its cases are Node-runnable, so this genuinely covers the new parsing; the fetch and `tockifyIsAvaEvent_` remain live-only.
 
 Run: `node tests/run.js TockifyUtil.gs`
 Expected: `1 passed, 0 failed`
 
-**Step 4: Commit**
+Then confirm nothing else regressed:
+
+Run: `node tests/run.js MeetupService.gs TockifyUtil.gs`
+Expected: `13 passed, 0 failed`
+
+**Step 6: Commit**
 
 ```bash
-git add src/TockifyService.gs
+git add src/TockifyUtil.gs src/TockifyService.gs
 git commit -m "feat: resolve shortened Meetup links to identify the host group"
 ```
 
@@ -443,7 +525,7 @@ The live test runs in Task 9 alongside the end-to-end check — batching them sa
 **Depends on Task 3's answer.** Use `group.tagset` below only if the probe confirmed top-level; otherwise substitute `group.content.tagset` and `saved.content.tagset`.
 
 **Files:**
-- Modify: `src/TockifyService.gs:233-255` — replace `tockifySetEventImage_`
+- Modify: `src/TockifyService.gs:258-280` — replace `tockifySetEventImage_` (was `233-255`; Task 4 added the live test and two functions above it)
 
 **Step 1: Replace the function**
 

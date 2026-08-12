@@ -45,6 +45,74 @@ function test_tockifyUtil() {
     }
   });
 
+  // tockifyRedirectTarget_ — the Location header parsed away from the network,
+  // so the shapes that only ever turn up against a live shortener are pinned
+  // here for free. Fixtures are built in this file on purpose: `instanceof
+  // Array` is realm-sensitive, as tests/run.js warns.
+  var SHORT_REQ = 'https://meetu.ps/e/Qbwn8/1qvFq/i';
+  var CLICK_REQ = 'https://www.meetup.com/ls/click?upn=u001.abc';
+  var targetCases = [
+    // The shape verified live on 2026-08-12.
+    [{ 'Location': 'https://www.meetup.com/vegaustin/events/315879624/?_xtd=x&from=ref' }, SHORT_REQ, 302,
+     'https://www.meetup.com/vegaustin/events/315879624/?_xtd=x&from=ref'],
+    // UrlFetchApp does not normalise header case, so both spellings must work.
+    [{ 'location': 'https://www.meetup.com/vegaustin/events/1/' }, SHORT_REQ, 301,
+     'https://www.meetup.com/vegaustin/events/1/'],
+    // Repeated headers arrive as an array, the same duality as Set-Cookie.
+    [{ 'Location': ['https://www.meetup.com/vegaustin/events/2/'] }, SHORT_REQ, 302,
+     'https://www.meetup.com/vegaustin/events/2/'],
+    // Protocol-relative is legal, and classifies correctly once a scheme is on
+    // it — refusing it outright would turn a correct 'yes' into an error email.
+    [{ 'Location': '//www.meetup.com/vegaustin/events/3/' }, SHORT_REQ, 302,
+     'https://www.meetup.com/vegaustin/events/3/'],
+    // Path-relative off Meetup's own click tracker is the case where resolving
+    // rather than rejecting actually recovers a canonical event URL.
+    [{ 'Location': '/vegaustin/events/4/' }, CLICK_REQ, 302,
+     'https://www.meetup.com/vegaustin/events/4/'],
+    // Off the shortener it stays on the shortener's origin, which tockifyAvaHost_
+    // then answers 'unknown' for — a loud error rather than a silent 'no'.
+    [{ 'Location': '/e/other/' }, SHORT_REQ, 302, 'https://meetu.ps/e/other/'],
+    // 307/308 preserve the method but are still redirects.
+    [{ 'Location': 'https://www.meetup.com/vegaustin/events/5/' }, SHORT_REQ, 308,
+     'https://www.meetup.com/vegaustin/events/5/']
+  ];
+  targetCases.forEach(function (c) {
+    var got = tockifyRedirectTarget_(c[0], c[1], c[2]);
+    if (got.url !== c[3]) {
+      throw new Error('tockifyRedirectTarget_(' + JSON.stringify(c[0]) + ', HTTP ' + c[2] +
+        ') -> ' + JSON.stringify(got) + ', want ' + c[3]);
+    }
+  });
+
+  // The two failure modes must not be reported as each other: a 200 carrying a
+  // Location is not a redirect at all, while a 302 without one is a broken
+  // redirect. An HTTP 404 here is the deleted-fixture case, and saying so is
+  // what stops the next person debugging working code.
+  var targetErrors = [
+    [{ 'Location': 'https://www.meetup.com/vegaustin/events/1/' }, SHORT_REQ, 200, 'not a redirect (HTTP 200)'],
+    [{}, SHORT_REQ, 404, 'not a redirect (HTTP 404)'],
+    [{}, SHORT_REQ, 302, 'no Location header (HTTP 302)'],
+    [{ 'Location': '' }, SHORT_REQ, 302, 'no Location header (HTTP 302)'],
+    [{ 'Location': [] }, SHORT_REQ, 302, 'no Location header (HTTP 302)'],
+    [null, SHORT_REQ, 302, 'no Location header (HTTP 302)'],
+    // Anything still not absolute after resolution is refused rather than handed
+    // to tockifyAvaHost_, which would answer 'no' — the silent skip this whole
+    // feature exists to prevent.
+    [{ 'Location': 'events/6/' }, SHORT_REQ, 302, 'unresolvable Location'],
+    [{ 'Location': 'javascript:alert(1)' }, SHORT_REQ, 302, 'unresolvable Location'],
+    [{ 'Location': '/vegaustin/events/7/' }, 'not-a-url', 302, 'unresolvable Location']
+  ];
+  targetErrors.forEach(function (c) {
+    var got = tockifyRedirectTarget_(c[0], c[1], c[2]);
+    if (!got.error || got.error.indexOf(c[3]) === -1) {
+      throw new Error('tockifyRedirectTarget_(' + JSON.stringify(c[0]) + ', HTTP ' + c[2] +
+        ') -> ' + JSON.stringify(got) + ', want error containing "' + c[3] + '"');
+    }
+    // A result carrying both is how a caller checking the wrong field follows a
+    // URL the parser had already rejected.
+    if (got.url) throw new Error('an error result must carry no url: ' + JSON.stringify(got));
+  });
+
   // tockifyAddTag_ — merges, never replaces. Re-running a job must be a no-op.
   var added = tockifyAddTag_({ tags: { 'default': ['Potluck'] } }, AVA_TOCKIFY_TAG);
   if (added.tags['default'].join(',') !== 'Potluck,' + AVA_TOCKIFY_TAG) {
@@ -258,6 +326,54 @@ function tockifyAvaHost_(url) {
   if (/(?:^|[\/.])meetup\.com\/ls\/click/i.test(s)) return 'unknown';
 
   return 'no';
+}
+
+/**
+ * The absolute URL a redirect response points at.
+ *
+ * Pure header parsing, kept out of the network file for the same reason
+ * tockifySessionCookie_ is: everything interesting here is a shape that only
+ * turns up against a live third-party server, and a hand-run *_live test is the
+ * one place a regression will not be noticed.
+ *
+ * Three traps, each of which fails silently rather than loudly:
+ *   - UrlFetchApp does not normalise header case, and gives an array when a
+ *     header repeats, exactly as it does for Set-Cookie.
+ *   - A 200 carrying a stale Location is not a redirect. Following it reports a
+ *     host the server never redirected to.
+ *   - A relative Location is legal HTTP. Handed to tockifyAvaHost_ unresolved it
+ *     matches nothing and answers 'no', which is indistinguishable from a real
+ *     "not AVA" — so it must be resolved, and refused if it still cannot be.
+ *     Resolving beats refusing: a protocol-relative //www.meetup.com/... URL
+ *     classifies correctly the moment it has a scheme, and rejecting it outright
+ *     would turn a right answer into an error.
+ *
+ * @param {Object|null} headers - from HTTPResponse.getAllHeaders()
+ * @param {string} requestUrl - what was fetched, the base for a relative Location
+ * @param {number} statusCode
+ * @returns {{url: string}|{error: string}}
+ */
+function tockifyRedirectTarget_(headers, requestUrl, statusCode) {
+  if (!(statusCode >= 300 && statusCode < 400)) {
+    return { error: 'not a redirect (HTTP ' + statusCode + ')' };
+  }
+
+  var loc = headers && (headers['Location'] || headers['location']);
+  if (loc instanceof Array) loc = loc[0];
+  if (!loc) return { error: 'redirect with no Location header (HTTP ' + statusCode + ')' };
+  loc = String(loc);
+
+  if (loc.indexOf('//') === 0) {
+    // Scheme-relative. Every host in scope is https, and upgrading is the safe
+    // direction to guess wrong in.
+    loc = 'https:' + loc;
+  } else if (loc.charAt(0) === '/') {
+    var origin = String(requestUrl).match(/^(https?:\/\/[^\/?#]+)/i);
+    if (origin) loc = origin[1] + loc;
+  }
+  if (!/^https?:\/\//i.test(loc)) return { error: 'unresolvable Location: ' + loc };
+
+  return { url: loc };
 }
 
 /**
