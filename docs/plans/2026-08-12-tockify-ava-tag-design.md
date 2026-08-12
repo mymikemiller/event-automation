@@ -1,9 +1,12 @@
 # Tockify Austin Vegan Association Tag — Design
 
 **Date:** 2026-08-12
-**Status:** Designed, not implemented. The tag shape and the short-link redirect
-were verified against live services on 2026-08-12, including the authenticated
-eventgroup record — see [The tag's shape](#the-tags-shape).
+**Status:** Partly implemented. The pure helpers are in `src/TockifyUtil.gs` and
+the redirect resolver and host classifier are in `src/TockifyService.gs` (plan
+Tasks 1, 2 and 4); the single-write `tockifyUpdateEventGroup_` and the job
+rewiring (Tasks 5–7) are not written yet. The tag shape and the short-link
+redirect were verified against live services on 2026-08-12, including the
+authenticated eventgroup record — see [The tag's shape](#the-tags-shape).
 
 ---
 

@@ -40,6 +40,15 @@ function test_tockifyIsAvaEvent_live() {
 /**
  * Reports where `tagset` actually lives on an authenticated event group.
  *
+ * ANSWERED — run 2026-08-12. It does not live anywhere: there is no `tagset` key
+ * on the eventgroup record and no `content` wrapper. Tags are a flat top-level
+ * array of bare strings, group.tags = ["Austin-Vegan-Association"], found by the
+ * value search at tags[0]. Neither hypothesis below was right — see
+ * tockifyAddTag_ (TockifyUtil.gs), which is written against this answer, and do
+ * not write the public API's content.tagset.tags.default back to this endpoint.
+ * The rest of this comment records the pre-probe reasoning, kept because it
+ * explains why the value search was worth writing.
+ *
  * Read-only: a single GET, no PUT. Run it from the editor and paste the log.
  *
  * We cannot guess this one. The public ngevent record nests the field at

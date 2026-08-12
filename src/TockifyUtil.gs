@@ -163,9 +163,18 @@ function test_tockifyUtil() {
     throw new Error('tockifyAddTag_ must not mutate its input on the no-op branch, got ' + JSON.stringify(noop));
   }
 
-  // Sharing the array is invisible to the two checks above on the no-op branch —
-  // nothing is appended there, so the input reads back correct either way. Push
-  // into the RESULT to catch it, on both branches.
+  // The tag-PRESENT case below is the load-bearing one, and it is the only thing
+  // in this file that catches a `concat`-style implementation: that appends a
+  // copy when the tag is absent but returns the caller's own array untouched
+  // when it is present, which every check above passes. Nothing is appended on
+  // that branch, so the input reads back correct however it was returned — only
+  // pushing into the RESULT exposes the alias.
+  //
+  // The tag-ABSENT case is its symmetric twin, and is redundant on its own: for
+  // the result to alias the input there the implementation must append in place,
+  // which trips the no-mutate check above first, loudly and by name. It stays
+  // because an asymmetric pair invites a future reader to finish the cleanup by
+  // deleting the other one.
   var srcAbsent = ['Potluck'];
   tockifyAddTag_(srcAbsent, AVA_TOCKIFY_TAG).push('x');
   if (srcAbsent.join(',') !== 'Potluck') {
@@ -178,14 +187,31 @@ function test_tockifyUtil() {
     throw new Error('the result must share no array with the input (tag present), got ' + JSON.stringify(srcPresent));
   }
 
+  // A tag that merely CONTAINS ours must not suppress the append. Matching is
+  // exact, on whole elements — 'Austin-Vegan-Association-Board' is a different
+  // tag, and a substring test here refuses to append forever, so the job's
+  // read-back never passes and the event retries until it gives up.
+  var sibling = tockifyAddTag_([AVA_TOCKIFY_TAG + '-Board'], AVA_TOCKIFY_TAG);
+  if (sibling.join(',') !== AVA_TOCKIFY_TAG + '-Board,' + AVA_TOCKIFY_TAG) {
+    throw new Error('a superstring sibling must not suppress the append, got ' + JSON.stringify(sibling));
+  }
+
   // tockifyHasTag_ — used to verify the write stuck
   if (!tockifyHasTag_(['x', AVA_TOCKIFY_TAG, 'y'], AVA_TOCKIFY_TAG)) {
     throw new Error('tockifyHasTag_ should find a present tag among others');
   }
-  // The last two entries are the ones that matter: a string carrying the tag as
-  // a substring makes a bare indexOf return a non-negative index and report a
-  // write that never landed as successful.
-  [undefined, null, [], ['x'], {}, AVA_TOCKIFY_TAG, 'tags=' + AVA_TOCKIFY_TAG + ';'].forEach(function (input) {
+  // Two distinct substring traps, and each needs its own entry.
+  //   - The CONTAINER is a string (entries 6-7): a bare indexOf on it finds the
+  //     tag inside and reports a write that never landed. Guarded by
+  //     `instanceof Array`.
+  //   - An ELEMENT is a superstring (entries 8-9): matching elements loosely —
+  //     joining the array, or indexOf per element — says "tagged" about an event
+  //     carrying only a sibling tag. Guarded by Array#indexOf being an exact
+  //     ===-match on whole elements. Nothing above catches this: 'x' shares no
+  //     substring with the tag, and the string entries exercise the type guard
+  //     rather than the match semantics.
+  [undefined, null, [], ['x'], {}, AVA_TOCKIFY_TAG, 'tags=' + AVA_TOCKIFY_TAG + ';',
+   [AVA_TOCKIFY_TAG + '-Board'], ['Not-' + AVA_TOCKIFY_TAG]].forEach(function (input) {
     if (tockifyHasTag_(input, AVA_TOCKIFY_TAG)) {
       throw new Error('tockifyHasTag_(' + JSON.stringify(input) + ') should be false');
     }
@@ -406,7 +432,13 @@ function tockifyRedirectTarget_(headers, requestUrl, statusCode) {
  * freshly parsed response; a result that shared the caller's array is how that
  * check passes on a write that never happened.
  *
- * @param {Array|null|undefined} tags - group.tags, absent on an untagged event
+ * Matching is exact, on whole elements. A sibling tag that merely contains this
+ * one — 'Austin-Vegan-Association-Board' — must still get the tag appended; a
+ * substring test there refuses to append forever, and the caller's read-back
+ * then fails on every retry until the job gives up.
+ *
+ * @param {Array|null|undefined} tags - group.tags; absent or empty on an
+ *   untagged event (not probed — the probe sampled a tagged one; both handled)
  * @param {string} tag
  * @returns {Array} a new array
  */
@@ -422,11 +454,17 @@ function tockifyAddTag_(tags, tag) {
  * nothing and this check is the only thing between a silent failure and a
  * correct report.
  *
- * The `instanceof Array` is load-bearing, not a type-safety nicety: given a
- * string `tags` that merely contains the tag as a substring, a bare indexOf
- * returns a non-negative index and reports a write that never landed as a
- * success. That is exactly the value a server rejecting the array shape could
- * hand back.
+ * Two guards, against two different substring traps:
+ *   - `instanceof Array` is load-bearing, not a type-safety nicety: given a
+ *     string `tags` that merely contains the tag as a substring, a bare indexOf
+ *     returns a non-negative index and reports a write that never landed as a
+ *     success. That is exactly the value a server rejecting the array shape
+ *     could hand back.
+ *   - Array#indexOf matches whole elements with ===, which is equally
+ *     load-bearing. Comparing loosely instead — joining the array, or running
+ *     indexOf on each element — reports "tagged" for an event carrying only
+ *     'Austin-Vegan-Association-Board', a different tag that happens to contain
+ *     this one.
  *
  * @param {Array|null|undefined} tags - group.tags
  * @param {string} tag

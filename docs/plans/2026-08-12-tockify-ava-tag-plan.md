@@ -41,7 +41,7 @@ Expected on a clean tree: `1 passed, 0 failed`.
 
 ---
 
-## Task 1: The host classifier
+## Task 1: The host classifier — **DONE**
 
 **Files:**
 - Modify: `src/TockifyUtil.gs` (constants near line 77; new function; cases in `test_tockifyUtil`)
@@ -156,7 +156,7 @@ git commit -m "feat: classify whether an event URL is hosted by Austin Vegan Ass
 
 ---
 
-## Task 2: Tag merge helpers
+## Task 2: Tag merge helpers — **DONE** (reworked after Task 3's probe)
 
 **Files:**
 - Modify: `src/TockifyUtil.gs`
@@ -215,9 +215,18 @@ Add to `test_tockifyUtil`, after the `tockifyAvaHost_` block:
     throw new Error('tockifyAddTag_ must not mutate its input on the no-op branch, got ' + JSON.stringify(noop));
   }
 
-  // Sharing the array is invisible to the two checks above on the no-op branch —
-  // nothing is appended there, so the input reads back correct either way. Push
-  // into the RESULT to catch it, on both branches.
+  // The tag-PRESENT case below is the load-bearing one, and it is the only thing
+  // in this file that catches a `concat`-style implementation: that appends a
+  // copy when the tag is absent but returns the caller's own array untouched
+  // when it is present, which every check above passes. Nothing is appended on
+  // that branch, so the input reads back correct however it was returned — only
+  // pushing into the RESULT exposes the alias.
+  //
+  // The tag-ABSENT case is its symmetric twin, and is redundant on its own: for
+  // the result to alias the input there the implementation must append in place,
+  // which trips the no-mutate check above first, loudly and by name. It stays
+  // because an asymmetric pair invites a future reader to finish the cleanup by
+  // deleting the other one.
   var srcAbsent = ['Potluck'];
   tockifyAddTag_(srcAbsent, AVA_TOCKIFY_TAG).push('x');
   if (srcAbsent.join(',') !== 'Potluck') {
@@ -230,19 +239,43 @@ Add to `test_tockifyUtil`, after the `tockifyAvaHost_` block:
     throw new Error('the result must share no array with the input (tag present), got ' + JSON.stringify(srcPresent));
   }
 
+  // A tag that merely CONTAINS ours must not suppress the append. Matching is
+  // exact, on whole elements — 'Austin-Vegan-Association-Board' is a different
+  // tag, and a substring test there refuses to append forever, so the job's
+  // read-back never passes and the event retries until it gives up.
+  var sibling = tockifyAddTag_([AVA_TOCKIFY_TAG + '-Board'], AVA_TOCKIFY_TAG);
+  if (sibling.join(',') !== AVA_TOCKIFY_TAG + '-Board,' + AVA_TOCKIFY_TAG) {
+    throw new Error('a superstring sibling must not suppress the append, got ' + JSON.stringify(sibling));
+  }
+
   // tockifyHasTag_ — used to verify the write stuck
   if (!tockifyHasTag_(['x', AVA_TOCKIFY_TAG, 'y'], AVA_TOCKIFY_TAG)) {
     throw new Error('tockifyHasTag_ should find a present tag among others');
   }
-  // The last two entries are the ones that matter: a string carrying the tag as
-  // a substring makes a bare indexOf return a non-negative index and report a
-  // write that never landed as successful.
-  [undefined, null, [], ['x'], {}, AVA_TOCKIFY_TAG, 'tags=' + AVA_TOCKIFY_TAG + ';'].forEach(function (input) {
+  // Two distinct substring traps, and each needs its own entry.
+  //   - The CONTAINER is a string (entries 6-7): a bare indexOf on it finds the
+  //     tag inside and reports a write that never landed. Guarded by
+  //     `instanceof Array`.
+  //   - An ELEMENT is a superstring (entries 8-9): matching elements loosely —
+  //     joining the array, or indexOf per element — says "tagged" about an event
+  //     carrying only a sibling tag. Guarded by Array#indexOf being an exact
+  //     ===-match on whole elements. Nothing above catches this: 'x' shares no
+  //     substring with the tag, and the string entries exercise the type guard
+  //     rather than the match semantics.
+  [undefined, null, [], ['x'], {}, AVA_TOCKIFY_TAG, 'tags=' + AVA_TOCKIFY_TAG + ';',
+   [AVA_TOCKIFY_TAG + '-Board'], ['Not-' + AVA_TOCKIFY_TAG]].forEach(function (input) {
     if (tockifyHasTag_(input, AVA_TOCKIFY_TAG)) {
       throw new Error('tockifyHasTag_(' + JSON.stringify(input) + ') should be false');
     }
   });
 ```
+
+Three mutants that pass a suite without those last two negatives and the sibling
+append case, each a silent failure in production: `tags.join(',').indexOf(tag)`
+and a per-element `String(tags[i]).indexOf(tag)` in `tockifyHasTag_` both report
+"the tag stuck" for an event carrying only `Austin-Vegan-Association-Board`, and
+`list.join(',').indexOf(tag) === -1` in `tockifyAddTag_` silently refuses to
+append on any event with a sibling tag, producing a permanently failing job.
 
 **Step 2: Run test to verify it fails**
 
@@ -276,7 +309,13 @@ Expected: `FAIL test_tockifyUtil` with `tockifyAddTag_ is not defined`
  * freshly parsed response; a result that shared the caller's array is how that
  * check passes on a write that never happened.
  *
- * @param {Array|null|undefined} tags - group.tags, absent on an untagged event
+ * Matching is exact, on whole elements. A sibling tag that merely contains this
+ * one — 'Austin-Vegan-Association-Board' — must still get the tag appended; a
+ * substring test there refuses to append forever, and the caller's read-back
+ * then fails on every retry until the job gives up.
+ *
+ * @param {Array|null|undefined} tags - group.tags; absent or empty on an
+ *   untagged event (not probed — the probe sampled a tagged one; both handled)
  * @param {string} tag
  * @returns {Array} a new array
  */
@@ -292,11 +331,17 @@ function tockifyAddTag_(tags, tag) {
  * nothing and this check is the only thing between a silent failure and a
  * correct report.
  *
- * The `instanceof Array` is load-bearing, not a type-safety nicety: given a
- * string `tags` that merely contains the tag as a substring, a bare indexOf
- * returns a non-negative index and reports a write that never landed as a
- * success. That is exactly the value a server rejecting the array shape could
- * hand back.
+ * Two guards, against two different substring traps:
+ *   - `instanceof Array` is load-bearing, not a type-safety nicety: given a
+ *     string `tags` that merely contains the tag as a substring, a bare indexOf
+ *     returns a non-negative index and reports a write that never landed as a
+ *     success. That is exactly the value a server rejecting the array shape
+ *     could hand back.
+ *   - Array#indexOf matches whole elements with ===, which is equally
+ *     load-bearing. Comparing loosely instead — joining the array, or running
+ *     indexOf on each element — reports "tagged" for an event carrying only
+ *     'Austin-Vegan-Association-Board', a different tag that happens to contain
+ *     this one.
  *
  * @param {Array|null|undefined} tags - group.tags
  * @param {string} tag
@@ -404,7 +449,7 @@ git commit -m "test: probe where tagset lives on a Tockify event group"
 
 ---
 
-## Task 4: Resolve shortened Meetup links
+## Task 4: Resolve shortened Meetup links — **DONE** (live test not yet run — Task 9)
 
 **Files:**
 - Modify: `src/TockifyUtil.gs` (new `tockifyRedirectTarget_`; cases in `test_tockifyUtil`)
@@ -592,7 +637,7 @@ The live test runs in Task 9 alongside the end-to-end check — batching them sa
 
 ---
 
-## Task 5: One GET/PUT for image and tag
+## Task 5: One GET/PUT for image and tag — not started
 
 **Task 3's answer is applied below.** The probe (2026-08-12) found tags in a flat top-level array of strings, `group.tags`. There is no `tagset` key on this record — do not reintroduce `group.tagset` or `group.content.tagset` from the public API's shape.
 
@@ -897,7 +942,7 @@ Add rows to the test function table (`README.md:266`), matching the existing for
 
 ```markdown
 | `test_tockifyIsAvaEvent_live` | TockifyService.gs | Short-link resolution and host classification |
-| `test_tockifyEventGroupShape_live` | TockifyService.gs | Read-only probe of where `tagset` sits on an event group |
+| `test_tockifyEventGroupShape_live` | TockifyService.gs | Read-only shape probe; run 2026-08-12, found tags in a flat top-level `tags` array |
 ```
 
 **Step 3: Verify the counts quoted in the test section**
