@@ -52,7 +52,7 @@ function test_tockifyUtil() {
   }
 
   var already = tockifyAddTag_({ tags: { 'default': [AVA_TOCKIFY_TAG] } }, AVA_TOCKIFY_TAG);
-  if (already.tags['default'].length !== 1) {
+  if (already.tags['default'].join(',') !== AVA_TOCKIFY_TAG) {
     throw new Error('tag must not be duplicated, got ' + JSON.stringify(already));
   }
 
@@ -63,10 +63,17 @@ function test_tockifyUtil() {
   }
 
   // An untagged event has no tagset at all; a malformed one must not throw.
-  [undefined, null, {}, { tags: null }, { tags: { 'default': 'nope' } }].forEach(function (input) {
+  [undefined, null, {}, { tags: null }, { tags: 'nope' }, { tags: { 'default': 'nope' } }].forEach(function (input) {
     var built = tockifyAddTag_(input, AVA_TOCKIFY_TAG);
     if (built.tags['default'].join(',') !== AVA_TOCKIFY_TAG) {
       throw new Error('tockifyAddTag_(' + JSON.stringify(input) + ') -> ' + JSON.stringify(built));
+    }
+    // None of these carry a real group besides default, and the whole tagset
+    // goes into the PUT body. A non-object `tags` spread by key is the trap:
+    // Object.keys('nope') would ship {"0":"n","1":"o",...} to Tockify while the
+    // default group above still looks perfectly correct.
+    if (Object.keys(built.tags).join(',') !== 'default') {
+      throw new Error('tockifyAddTag_(' + JSON.stringify(input) + ') invented groups -> ' + JSON.stringify(built));
     }
   });
 
@@ -77,6 +84,20 @@ function test_tockifyUtil() {
   tockifyAddTag_(original, AVA_TOCKIFY_TAG);
   if (original.tags['default'].length !== 1) throw new Error('tockifyAddTag_ must not mutate its input');
 
+  var noop = { tags: { 'default': [AVA_TOCKIFY_TAG], venue: ['Patio'] } };
+  tockifyAddTag_(noop, AVA_TOCKIFY_TAG);
+  if (noop.tags['default'].join(',') !== AVA_TOCKIFY_TAG || noop.tags.venue.join(',') !== 'Patio') {
+    throw new Error('tockifyAddTag_ must not mutate its input on the no-op branch');
+  }
+
+  var src = { tags: { 'default': [AVA_TOCKIFY_TAG], venue: ['Patio'] } };
+  var copy = tockifyAddTag_(src, AVA_TOCKIFY_TAG);
+  copy.tags['default'].push('x');
+  copy.tags.venue.push('x');
+  if (src.tags['default'].length !== 1 || src.tags.venue.length !== 1) {
+    throw new Error('the returned tagset must share no array with the input');
+  }
+
   // tockifyHasTag_ — used to verify the write stuck
   if (!tockifyHasTag_({ tags: { 'default': ['x', AVA_TOCKIFY_TAG] } }, AVA_TOCKIFY_TAG)) {
     throw new Error('tockifyHasTag_ should find a present tag');
@@ -86,6 +107,15 @@ function test_tockifyUtil() {
       throw new Error('tockifyHasTag_(' + JSON.stringify(input) + ') should be false');
     }
   });
+  // A string `default` must not read as a hit — indexOf on a string would find
+  // the tag inside it and report a write that never landed as successful.
+  if (tockifyHasTag_({ tags: { 'default': AVA_TOCKIFY_TAG } }, AVA_TOCKIFY_TAG)) {
+    throw new Error('a string default must not read as a hit');
+  }
+  // Only the group the tag is written to counts.
+  if (tockifyHasTag_({ tags: { venue: [AVA_TOCKIFY_TAG] } }, AVA_TOCKIFY_TAG)) {
+    throw new Error('a tag in another group must not read as a hit');
+  }
 
   // tockifyImageName_ — Tockify names the library entry from this
   var nameCases = [
@@ -233,11 +263,12 @@ function tockifyAvaHost_(url) {
 /**
  * A tagset with `tag` present, preserving every tag already on the event.
  *
- * Returns a new object rather than editing in place: the caller hands the whole
- * event group back to Tockify and then re-reads the response to confirm the
- * write stuck. If this mutated the input, that check would compare the saved
+ * Writes nothing to its input, and shares no array with it: the caller hands the
+ * whole event group back to Tockify and then re-reads the response to confirm
+ * the write stuck. If this mutated the input, that check would compare the saved
  * record against an object it had already modified and pass on a write that
- * never happened.
+ * never happened. Every group is copied, not just `default`, so no later edit to
+ * the result can reach back into the record the caller still holds.
  *
  * Shape comes from the live API: {tags: {default: [...]}}. An untagged event
  * has no tagset at all, so every level is rebuilt defensively.
@@ -251,8 +282,13 @@ function tockifyAddTag_(tagset, tag) {
   var list = (tags['default'] instanceof Array) ? tags['default'] : [];
 
   var next = {};
-  Object.keys(tags).forEach(function (k) { next[k] = tags[k]; });
-  next['default'] = (list.indexOf(tag) === -1) ? list.concat([tag]) : list;
+  Object.keys(tags).forEach(function (k) {
+    next[k] = (tags[k] instanceof Array) ? tags[k].slice() : tags[k];
+  });
+
+  var merged = list.slice();
+  if (merged.indexOf(tag) === -1) merged.push(tag);
+  next['default'] = merged;
 
   return { tags: next };
 }
