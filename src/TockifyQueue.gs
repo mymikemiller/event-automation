@@ -7,6 +7,16 @@
  * string, so changing it orphans every job already pending: they would never be
  * read again, never drained, and never reported.
  *
+ * A rename is not the only way to lose them, and not the likeliest. A stored
+ * value that will not parse — truncated, or corrupted — is swallowed by the
+ * catch below and comes back as [], and the next tockifyQueueAdd_ then saves a
+ * one-element array over the top of it. Measured: 5 pending jobs plus a
+ * truncated value leaves 1 job stored, with no throw, no warning and no email,
+ * so submitEvent's try/catch cannot see it either. Returning [] is still right
+ * — the alternative throws on every drain forever — and these are 2-hour-lived
+ * image and tag updates rather than user data, which is why this is documented
+ * and not defended against.
+ *
  * @returns {Array<Object>}
  */
 function tockifyQueueLoad_() {
@@ -20,9 +30,12 @@ function tockifyQueueLoad_() {
  *
  * The whole queue is one JSON string in one script property, and a property
  * value is capped at 9KB — the same limit meetupPruneNotified_ (MeetupService.gs)
- * exists to stay under. A job runs roughly 336 bytes with a canonical Meetup
- * source URL and up to ~475 with a heavily tracked ls/click one, so between
- * about 19 and 27 jobs fit. Past that setProperty throws 'Argument too large:
+ * exists to stay under. A job runs roughly 180 bytes with no image up to ~630
+ * with both URLs long, so the ceiling runs from about 50 jobs down to about 14.
+ * The image URL is the dominant lever, not the source URL: a Facebook CDN link
+ * carries ~330 characters of signed parameters (Index.html expects exactly
+ * these), while canonical -> tracked ls/click on the source adds only ~120.
+ * Assume the pessimistic end. Past it setProperty throws 'Argument too large:
  * value' and the job is not stored; submitEvent catches that and warns rather
  * than failing a submission whose calendar event is already created.
  *
