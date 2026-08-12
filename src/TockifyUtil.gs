@@ -17,13 +17,21 @@ function test_tockifyUtil() {
     ['https://meetu.ps/e/Qbwn8/1qvFq/i', 'unknown'],
     ['meetu.ps/e/Qbwn8/1qvFq/i', 'unknown'],
     ['meetup.com/ls/click?upn=u001.NY3oBFzZ5LJDG7YcnfSAKsQAD0GnFi1zzMJ-2FAp8', 'unknown'],
-    // A lookalike domain must not read as Meetup.
+    // Lookalike domains must not read as Meetup — a prefixed host, a suffixed
+    // one, and the shortener's equivalent.
     ['https://notmeetup.com/vegaustin/events/315879624/', 'no'],
+    ['https://meetup.com.evil.test/vegaustin/events/1/', 'no'],
+    ['https://notmeetu.ps/e/Qbwn8/', 'no'],
+    // Host and slug are both case-insensitive.
+    ['https://www.Meetup.com/VegAustin/events/1/', 'yes'],
     // Group-level URL carries no event; not an event link. The group's
     // event-LISTING page is the same story — an event link always carries an
     // ID, so /events/ with nothing after it must answer the same way.
     ['https://www.meetup.com/vegaustin/', 'no'],
     ['https://www.meetup.com/vegaustin/events/', 'no'],
+    // A listing page is where the scan STOPS. Anything further right is not
+    // this URL's event — matching it tags another group's event as ours.
+    ['https://www.meetup.com/other-group/events/?next=https://www.meetup.com/vegaustin/events/999/', 'no'],
     // Not Meetup at all, and the empty cases.
     ['https://www.facebook.com/events/1234567890/', 'no'],
     ['', 'no'],
@@ -135,9 +143,17 @@ var AVA_TOCKIFY_TAG = 'Austin-Vegan-Association';
  * so a bare indexOf('vegaustin') also fires on another group's event that
  * merely carries ?slug=vegaustin, tagging events AVA does not host.
  *
- * The trailing \d is what separates an event link from the group's /events/
+ * The event ID is what separates an event link from the group's /events/
  * listing page: an event link always carries an ID, and a listing page names no
- * event, so it must answer 'no' just as the bare group URL does.
+ * event, so it must answer 'no' just as the bare group URL does. The FIRST such
+ * segment decides even when it is a listing page, so
+ * meetup.com/vegaustin/events/?next=...vegaustin/events/999/ answers 'no' too.
+ * First-segment-wins is the conservative rule, and it is what keeps this total
+ * rather than heuristic: scanning rightward for a segment that does name an
+ * event is exactly how a URL in the query string gets tagged as ours.
+ *
+ * Matches the first meetup.com/<slug>/events/<id> anywhere in the string; it
+ * does not verify that segment is the URL's own authority.
  *
  * Deliberately NOT tied to MEETUP_GROUPS — that is the notifier's watch list
  * and may grow to include groups AVA does not host.
@@ -149,9 +165,17 @@ function tockifyAvaHost_(url) {
   if (!url) return 'no';
   var s = String(url);
 
-  // (?:^|[\/.]) so notmeetup.com and meetup.com.evil.test do not match.
-  var m = s.match(/(?:^|[\/.])meetup\.com\/([^\/\s?#]+)\/events\/\d/i);
-  if (m) return m[1].toLowerCase() === AVA_MEETUP_SLUG ? 'yes' : 'no';
+  // (?:^|[\/.]) so notmeetup.com does not match; the trailing \/ after
+  // meetup\.com is what rejects meetup.com.evil.test.
+  //
+  // The FIRST meetup.com/<slug>/events/ segment decides, whether or not it
+  // names an event. Scanning past a listing page for a segment that does is
+  // how a URL in the query string gets read as this URL's own event.
+  var m = s.match(/(?:^|[\/.])meetup\.com\/([^\/\s?#]+)\/events\/(\d*)/i);
+  if (m) {
+    if (!m[2]) return 'no';   // a listing page names no event
+    return m[1].toLowerCase() === AVA_MEETUP_SLUG ? 'yes' : 'no';
+  }
 
   // Share shortener and Meetup's own click tracker: the group is recoverable
   // only by following the redirect.
