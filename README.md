@@ -98,6 +98,7 @@ the event text in by hand.
 Events reach Tockify by Google Calendar sync, which carries no image. The script
 closes that gap: submitting an event queues a job, and a trigger running every
 five minutes sets the flyer as the featured image on the matching Tockify event.
+An event Austin Vegan Association hosts is tagged in the same pass.
 
 The image goes over as the **original source URL**, not the Drive copy. Tockify
 downloads and keeps its own copy, so the link only has to survive a single
@@ -108,7 +109,42 @@ Matching is on title **and** exact start time. Title alone is not enough, since
 repeating events share one. A multi-date event syncs to Tockify as a single
 repeating record, so there is one image to set no matter how many dates it has.
 
-Three details worth knowing:
+### Tagging AVA-hosted events
+
+An event is AVA's when the URL you submitted is a Meetup event under the
+`vegaustin` group, and it gets the `Austin-Vegan-Association` tag. That link
+rides along in the queued job, so the host is decided from what was pasted
+rather than from anything Tockify holds.
+
+`tockifyAvaHost_` (`src/TockifyUtil.gs`) answers `yes`, `no` or `unknown` —
+three states rather than a boolean because a canonical
+`meetup.com/vegaustin/events/<id>` URL is free to classify, while a `meetu.ps`
+share link or a `meetup.com/ls/click` tracking link costs an HTTP round trip.
+The `unknown` case is resolved in the background job by following one redirect
+hop, so submitting an event never waits on Meetup. A link still not classifiable
+after that is reported as an error rather than treated as a `no`: an event that
+goes untagged with no signal is the failure this path exists to prevent.
+
+The slug is matched on the URL **path**, for the same reason the Meetup notifier
+matches its IDs there. A real entry on this calendar reads:
+
+```
+meetup.com/vegaustin/events/313891224/?slug=vegaustin&eventId=307154188
+```
+
+so a plain substring test for `vegaustin` also fires on another group's event
+that merely carries that query string, tagging events AVA does not host. Two
+further rules fall out of the same trap: the match needs an event ID after
+`/events/`, so a group's listing page is not read as an event, and the *first*
+`/events/` segment decides, so a URL sitting inside a query string cannot win.
+
+Because the tag has nothing to do with the flyer, an event is now queued when it
+has an image **or** its host group is anything other than a definite `no` — an
+AVA event submitted without a flyer still gets tagged, and such a job does only
+the tag write. An `unknown` link is queued under the same rule and simply finds
+nothing to do once it resolves to another group.
+
+Four details worth knowing:
 
 - Tockify issues no API token. Auth is a session cookie obtained by logging in
   with `TOCKIFY_EMAIL` / `TOCKIFY_PASSWORD`. Enabling MFA on the Tockify account
@@ -119,10 +155,20 @@ Three details worth knowing:
 - `imageIdNg` is the field that sets the image. Writing `imageSets` directly
   returns HTTP 200 and is silently ignored, so the code re-reads the response
   and treats an empty `imageSets` as a failure.
+- Tags are a flat top-level array of strings on that same record —
+  `tags: ["Austin-Vegan-Association"]`. The public `ngevent` API nests the same
+  data at `content.tagset.tags.default`, and copying that shape back is the same
+  trap as `imageSets`: an unrecognised field is answered with a silent 200, so it
+  would look saved and change nothing. The tag write is verified against the
+  saved record for exactly that reason.
 
 If an event has not appeared in Tockify within two hours, the job is dropped and
-you get an email. None of these endpoints are documented or contractual, so
-failures are loud by design.
+you get an email; any other failure drops it on the spot. That email lists every
+problem the job hit rather than only the first, each line prefixed `image:`,
+`host group:` or `write:` — a stage absent from the list is one that worked, so
+a lone `host group:` line means the flyer landed and only the tag did not. None
+of these endpoints are documented or contractual, so failures are loud by
+design.
 
 Run `installTockifyTrigger` once from the editor to install the trigger.
 
@@ -240,6 +286,7 @@ Pure logic runs under Node without touching Google at all:
 ```bash
 node tests/run.js FacebookService.gs Extraction.gs RecurrenceService.gs Utilities.gs   # 26 tests
 node tests/run.js MeetupService.gs                                                     # 12 tests
+node tests/run.js TockifyUtil.gs                                                       # 1 test
 node tests/calendar.test.js                                                            # 5 tests
 ```
 
@@ -273,7 +320,12 @@ Available test functions:
 | `test_createRecurringWithException_live` | CalendarService.gs | An occurrence with a different time is patched individually |
 | `test_createIrregularSeries_live` | CalendarService.gs | The `RDATE` path materializes on irregular dates |
 | `test_processEventUrl_badUrl` | Code.gs | Error handling for unreachable URLs |
+| `test_tockifyLogin_live` | TockifyService.gs | Logging in returns a `TKFSession` cookie |
+| `test_tockifyUploadImage_live` | TockifyService.gs | An image URL uploads and comes back with a uuid |
+| `test_tockifyIsAvaEvent_live` | TockifyService.gs | Host-group classification, including a real short link resolved over the network |
+| `test_tockifyEventGroupShape_live` | TockifyService.gs | Read-only probe reporting where tags live on an authenticated event group |
 
-The `*_live` tests create `[TEST]` events and delete them in a `finally` block.
+The CalendarService `*_live` tests create `[TEST]` events and delete them in a
+`finally` block.
 
 To test a live extraction, edit `test_extractEventData_live` in Extraction.gs, replace the URL with a real event URL, push with `clasp push`, then run it from the editor and inspect the execution log output.
