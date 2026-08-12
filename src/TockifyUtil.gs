@@ -145,12 +145,15 @@ var AVA_TOCKIFY_TAG = 'Austin-Vegan-Association';
  *
  * The event ID is what separates an event link from the group's /events/
  * listing page: an event link always carries an ID, and a listing page names no
- * event, so it must answer 'no' just as the bare group URL does. The FIRST such
- * segment decides even when it is a listing page, so
- * meetup.com/vegaustin/events/?next=...vegaustin/events/999/ answers 'no' too.
- * First-segment-wins is the conservative rule, and it is what keeps this total
- * rather than heuristic: scanning rightward for a segment that does name an
- * event is exactly how a URL in the query string gets tagged as ours.
+ * event, so it must answer 'no' just as the bare group URL does. The first such
+ * segment decides whether or not it names an event, for the reason on the regex.
+ *
+ * So a string holding a listing-page segment is settled here even when it also
+ * mentions a shortener — once any /events/ segment matches, the shortener checks
+ * below are unreachable and the answer is 'no', not 'unknown'. That is the
+ * useful way round: 'unknown' would send a listing page to the redirect
+ * resolver, which finds no Location and reports a host it could not determine.
+ * A link that is only a shortener still answers 'unknown'.
  *
  * Matches the first meetup.com/<slug>/events/<id> anywhere in the string; it
  * does not verify that segment is the URL's own authority.
