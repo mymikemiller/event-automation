@@ -19,8 +19,11 @@ function test_tockifyUtil() {
     ['meetup.com/ls/click?upn=u001.NY3oBFzZ5LJDG7YcnfSAKsQAD0GnFi1zzMJ-2FAp8', 'unknown'],
     // A lookalike domain must not read as Meetup.
     ['https://notmeetup.com/vegaustin/events/315879624/', 'no'],
-    // Group-level URL carries no event; not an event link.
+    // Group-level URL carries no event; not an event link. The group's
+    // event-LISTING page is the same story — an event link always carries an
+    // ID, so /events/ with nothing after it must answer the same way.
     ['https://www.meetup.com/vegaustin/', 'no'],
+    ['https://www.meetup.com/vegaustin/events/', 'no'],
     // Not Meetup at all, and the empty cases.
     ['https://www.facebook.com/events/1234567890/', 'no'],
     ['', 'no'],
@@ -132,6 +135,10 @@ var AVA_TOCKIFY_TAG = 'Austin-Vegan-Association';
  * so a bare indexOf('vegaustin') also fires on another group's event that
  * merely carries ?slug=vegaustin, tagging events AVA does not host.
  *
+ * The trailing \d is what separates an event link from the group's /events/
+ * listing page: an event link always carries an ID, and a listing page names no
+ * event, so it must answer 'no' just as the bare group URL does.
+ *
  * Deliberately NOT tied to MEETUP_GROUPS — that is the notifier's watch list
  * and may grow to include groups AVA does not host.
  *
@@ -143,7 +150,7 @@ function tockifyAvaHost_(url) {
   var s = String(url);
 
   // (?:^|[\/.]) so notmeetup.com and meetup.com.evil.test do not match.
-  var m = s.match(/(?:^|[\/.])meetup\.com\/([^\/\s?#]+)\/events\//i);
+  var m = s.match(/(?:^|[\/.])meetup\.com\/([^\/\s?#]+)\/events\/\d/i);
   if (m) return m[1].toLowerCase() === AVA_MEETUP_SLUG ? 'yes' : 'no';
 
   // Share shortener and Meetup's own click tracker: the group is recoverable
