@@ -394,7 +394,12 @@ function tockifyRedirectTarget_(headers, requestUrl, statusCode) {
 }
 ```
 
-Add cases to `test_tockifyUtil` covering: absolute, lowercase header key, array-valued header, protocol-relative, path-relative against `meetup.com/ls/click` (the case that actually recovers a canonical URL) and against the shortener, 307/308, plus the error table — 200-with-Location, 404, 302-without-Location, empty string, empty array, null headers, a non-absolute leftover, and a `javascript:` scheme. Build every fixture inside the `.gs` file: `instanceof Array` is realm-sensitive under the `vm` runner (see `tests/run.js`).
+Add cases to `test_tockifyUtil` covering: absolute, lowercase header key, array-valued header, protocol-relative, path-relative against `meetup.com/ls/click` (the case that actually recovers a canonical URL) and against the shortener, 307/308, plus the error table — 200-with-Location, 404, 302-without-Location, empty string, empty array, null headers, a non-absolute leftover, and a `javascript:` scheme.
+
+Two traps in those fixtures:
+
+- Build every one inside the `.gs` file. `instanceof Array` is realm-sensitive under the `vm` runner (see `tests/run.js`).
+- Give the array-valued case **two** entries. A single-element array stringifies to exactly its element, so `{Location: ['https://…/events/2/']}` passes with `loc = loc[0]` deleted and pins nothing. Two entries yield `'https://…/events/2/,https://evil.test/'` without the coercion, and also pin *which* entry is taken.
 
 **Step 2: Write the fetch in `src/TockifyService.gs`**
 

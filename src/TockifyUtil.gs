@@ -58,8 +58,11 @@ function test_tockifyUtil() {
     // UrlFetchApp does not normalise header case, so both spellings must work.
     [{ 'location': 'https://www.meetup.com/vegaustin/events/1/' }, SHORT_REQ, 301,
      'https://www.meetup.com/vegaustin/events/1/'],
-    // Repeated headers arrive as an array, the same duality as Set-Cookie.
-    [{ 'Location': ['https://www.meetup.com/vegaustin/events/2/'] }, SHORT_REQ, 302,
+    // Repeated headers arrive as an array, the same duality as Set-Cookie. Two
+    // entries, not one: a single-element array stringifies to exactly its
+    // element, so a one-entry fixture passes even with the [0] deleted and pins
+    // nothing. Two also pins WHICH entry is taken.
+    [{ 'Location': ['https://www.meetup.com/vegaustin/events/2/', 'https://evil.test/'] }, SHORT_REQ, 302,
      'https://www.meetup.com/vegaustin/events/2/'],
     // Protocol-relative is legal, and classifies correctly once a scheme is on
     // it — refusing it outright would turn a correct 'yes' into an error email.
