@@ -111,13 +111,21 @@ function submitEvent(eventData) {
     );
   }
 
-  // 6. Queue the Tockify image update. Tockify syncs from Google within
-  //    seconds, but not instantly, so a trigger applies this shortly after.
-  if (eventData.image_url && plan.dates.length) {
+  // 6. Queue the Tockify update. Tockify syncs from Google within seconds, but
+  //    not instantly, so a trigger applies this shortly after.
+  //
+  //    Queued when there is an image OR the event might be AVA-hosted — an AVA
+  //    event submitted without a flyer still needs its tag. 'unknown' (a
+  //    meetu.ps link) queues too: resolving it here would put a redirect fetch
+  //    in the submit path, so the job does it instead and simply finds nothing
+  //    to do when the link turns out to belong to another group.
+  var avaHost = tockifyAvaHost_(eventData.source_url);
+  if (plan.dates.length && (eventData.image_url || avaHost !== 'no')) {
     tockifyQueueAdd_(
       eventData.title,
       tockifyStartMillis_(plan.dates[0]),
-      eventData.image_url
+      eventData.image_url,
+      eventData.source_url
     );
   }
 
