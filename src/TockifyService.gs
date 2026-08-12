@@ -12,6 +12,23 @@ function test_tockifyUploadImage_live() {
   Logger.log('test_tockifyUploadImage_live: PASSED — uuid ' + r.uuid);
 }
 
+function test_tockifyIsAvaEvent_live() {
+  // Verified 2026-08-12: this short link 302s to
+  // www.meetup.com/vegaustin/events/315879624/
+  var short = tockifyIsAvaEvent_('https://meetu.ps/e/Qbwn8/1qvFq/i');
+  if (short.error) throw new Error(short.error);
+  if (!short.isAva) throw new Error('short link to an AVA event should resolve to isAva');
+
+  // No fetch should be needed for these two.
+  var canonical = tockifyIsAvaEvent_('https://www.meetup.com/vegaustin/events/315879624/');
+  if (!canonical.isAva) throw new Error('canonical AVA URL should be isAva');
+
+  var other = tockifyIsAvaEvent_('https://www.facebook.com/events/1234567890/');
+  if (other.isAva) throw new Error('a Facebook URL is not an AVA Meetup event');
+
+  Logger.log('test_tockifyIsAvaEvent_live: PASSED');
+}
+
 /**
  * Logs in to Tockify and returns the session cookie, caching it for 6 hours.
  * Tockify issues no API token — auth is the httpOnly TKFSession cookie only.
@@ -252,4 +269,55 @@ function tockifySetEventImage_(cookie, uid, imageSetId) {
     return { error: 'image did not stick — imageSets came back empty' };
   }
   return { success: true };
+}
+
+/**
+ * Follows ONE redirect hop and returns the target URL.
+ *
+ * One hop, not a chain: the live meetu.ps link verified on 2026-08-12 lands on
+ * the canonical www.meetup.com URL in a single 302, and an unbounded redirect
+ * chase inside an unattended 5-minute job is a worse failure than a missed tag.
+ *
+ * @param {string} url
+ * @returns {{url: string}|{error: string}}
+ */
+function tockifyResolveRedirect_(url) {
+  var res = UrlFetchApp.fetch(url, {
+    method: 'get',
+    followRedirects: false,
+    muteHttpExceptions: true
+  });
+
+  var headers = res.getAllHeaders();
+  var loc = headers['Location'] || headers['location'];
+  if (loc instanceof Array) loc = loc[0];
+  if (!loc) return { error: 'no Location header (HTTP ' + res.getResponseCode() + ')' };
+
+  return { url: String(loc) };
+}
+
+/**
+ * Whether a submitted event URL is an AVA-hosted Meetup event, paying for a
+ * redirect fetch only when the URL is a shortener.
+ *
+ * A resolved URL that is STILL not classifiable is an error, not a `false` —
+ * silently treating it as "not AVA" is how an event goes untagged with no
+ * signal that anything was skipped.
+ *
+ * @param {string} sourceUrl
+ * @returns {{isAva: boolean}|{error: string}}
+ */
+function tockifyIsAvaEvent_(sourceUrl) {
+  var host = tockifyAvaHost_(sourceUrl);
+  if (host !== 'unknown') return { isAva: host === 'yes' };
+
+  var resolved = tockifyResolveRedirect_(sourceUrl);
+  if (resolved.error) return { error: resolved.error };
+
+  var host2 = tockifyAvaHost_(resolved.url);
+  if (host2 === 'unknown') {
+    return { error: 'redirect from ' + sourceUrl + ' reached ' + resolved.url +
+      ', which is still not a canonical Meetup event URL' };
+  }
+  return { isAva: host2 === 'yes' };
 }
