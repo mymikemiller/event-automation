@@ -422,7 +422,7 @@ function tockifyRedirectTarget_(headers, requestUrl, statusCode) {
  * content.tagset.tags.default, and that is NOT what to write. Reading the public
  * response and copying its shape is the trap here: this server answers a body it
  * does not recognise with a silent 200 (see `imageSets` vs `imageIdNg` on
- * tockifySetEventImage_), so a nested tagset would look like it saved and
+ * tockifyUpdateEventGroup_), so a nested tagset would look like it saved and
  * quietly change nothing. The probe found no `tagset` key anywhere on the
  * eventgroup record, and no `content` wrapper at all.
  *

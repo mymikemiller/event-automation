@@ -52,9 +52,10 @@ function test_tockifyIsAvaEvent_live() {
  * Read-only: a single GET, no PUT. Run it from the editor and paste the log.
  *
  * We cannot guess this one. The public ngevent record nests the field at
- * content.tagset.tags.default, but tockifySetEventImage_ shows the authenticated
- * eventgroup record is flattened at least for images — it writes `imageIdNg` and
- * reads `imageSets` at the top level, where ngevent has both under `content`.
+ * content.tagset.tags.default, but the image write (now tockifyUpdateEventGroup_)
+ * shows the authenticated eventgroup record is flattened at least for images — it
+ * writes `imageIdNg` and reads `imageSets` at the top level, where ngevent has
+ * both under `content`.
  * Writing the wrong body shape to this endpoint returns 404 Not found and
  * writing the wrong field returns a silent 200, so a guess fails quietly.
  *
@@ -333,15 +334,37 @@ function tockifyRegisterImage_(cookie, uuid, name) {
 }
 
 /**
- * Sets the featured image on a Tockify event group.
- * `imageIdNg` is the write field — writing `imageSets` directly returns 200
- * and is silently ignored. The server hydrates `imageSets` from `imageIdNg`.
+ * Applies the image and/or the AVA tag to a Tockify event group in one write.
+ *
+ * One GET/PUT rather than two: both fields live in the same record, so separate
+ * cycles would double the round trips and let the pair land half-applied.
+ *
+ * `imageIdNg` is the write field for the image — writing `imageSets` directly
+ * returns 200 and is silently ignored. The server hydrates `imageSets` from
+ * `imageIdNg`, which is also why the read-back below checks `imageSets` and not
+ * the field that was written.
+ *
+ * `tags` is the field for the tag: a flat top-level array of bare strings,
+ * confirmed by live probe on 2026-08-12 (test_tockifyEventGroupShape_live)
+ * against this same eventgroup record. The public ngevent API's nested
+ * content.tagset.tags.default is NOT what this endpoint takes — there is no
+ * `tagset` key and no `content` wrapper on this record at all, and an
+ * unrecognised body field comes back as a silent 200, so writing the public
+ * shape would look saved and change nothing.
+ *
+ * That probe was read-only — one GET, no PUT — so it establishes where the tag
+ * LIVES, not that the field is writable. The read-back is what makes that safe
+ * to act on: were `tags` a read-only projection, the server would echo the
+ * pre-existing list, tockifyHasTag_ would return false, and this returns a loud
+ * "tag did not stick" rather than a silent success. What actually proves the
+ * write lands is the Task 9 live end-to-end run.
+ *
  * @param {string} cookie
  * @param {string} uid
- * @param {string} imageSetId
+ * @param {{imageSetId: string=, addTag: string=}} changes
  * @returns {{success: true}|{error: string}}
  */
-function tockifySetEventImage_(cookie, uid, imageSetId) {
+function tockifyUpdateEventGroup_(cookie, uid, changes) {
   var path = '/api/eventgroup/' + TOCKIFY_CALID + '/' + uid;
 
   var getRes = tockifyFetch_(path, cookie);
@@ -349,18 +372,34 @@ function tockifySetEventImage_(cookie, uid, imageSetId) {
     return { error: 'eventgroup GET returned HTTP ' + getRes.getResponseCode() };
   }
 
-  var group = JSON.parse(getRes.getContentText());
-  group.imageIdNg = imageSetId;
+  var group;
+  try {
+    group = JSON.parse(getRes.getContentText());
+  } catch (e) {
+    return { error: 'eventgroup GET returned non-JSON' };
+  }
+
+  if (changes.imageSetId) group.imageIdNg = changes.imageSetId;
+  if (changes.addTag) group.tags = tockifyAddTag_(group.tags, changes.addTag);
 
   var putRes = tockifyFetch_(path, cookie, { method: 'put', payload: group });
   if (putRes.getResponseCode() !== 200) {
     return { error: 'eventgroup PUT returned HTTP ' + putRes.getResponseCode() };
   }
 
-  // A 200 alone does not mean the image was accepted — check it stuck.
-  var saved = JSON.parse(putRes.getContentText());
-  if (!saved.imageSets || !saved.imageSets.length) {
+  // A 200 alone does not mean the write was accepted — check each one stuck.
+  var saved;
+  try {
+    saved = JSON.parse(putRes.getContentText());
+  } catch (e) {
+    return { error: 'eventgroup PUT returned non-JSON' };
+  }
+
+  if (changes.imageSetId && (!saved.imageSets || !saved.imageSets.length)) {
     return { error: 'image did not stick — imageSets came back empty' };
+  }
+  if (changes.addTag && !tockifyHasTag_(saved.tags, changes.addTag)) {
+    return { error: 'tag did not stick — "' + changes.addTag + '" absent from the saved tags' };
   }
   return { success: true };
 }
