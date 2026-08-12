@@ -341,8 +341,17 @@ function tockifyRegisterImage_(cookie, uuid, name) {
  *
  * `imageIdNg` is the write field for the image — writing `imageSets` directly
  * returns 200 and is silently ignored. The server hydrates `imageSets` from
- * `imageIdNg`, which is also why the read-back below checks `imageSets` and not
- * the field that was written.
+ * `imageIdNg`, so the read-back checks BOTH: `imageSets` non-empty proves the
+ * server processed the write rather than just storing a string, and
+ * `imageIdNg` equalling what we sent proves it stored OUR id. Neither implies
+ * the other. Counting `imageSets` alone passes on an event that already had an
+ * image and whose `imageIdNg` the server ignored — the record comes back with a
+ * populated `imageSets` belonging to the old image.
+ *
+ * We PUT the whole record, so `imageSets` goes back up on every write even
+ * though it is documented write-ignored. Harmless today. If Tockify ever makes
+ * it writable, that echo becomes a stale write racing `imageIdNg` and this is
+ * the first place to look.
  *
  * `tags` is the field for the tag: a flat top-level array of bare strings,
  * confirmed by live probe on 2026-08-12 (test_tockifyEventGroupShape_live)
@@ -356,15 +365,26 @@ function tockifyRegisterImage_(cookie, uuid, name) {
  * LIVES, not that the field is writable. The read-back is what makes that safe
  * to act on: were `tags` a read-only projection, the server would echo the
  * pre-existing list, tockifyHasTag_ would return false, and this returns a loud
- * "tag did not stick" rather than a silent success. What actually proves the
- * write lands is the Task 9 live end-to-end run.
+ * "tag did not stick" rather than a silent success. Writability is only ever
+ * established by an end-to-end run against a live event that does NOT already
+ * carry the tag — on an already-tagged event the read-back passes on a tag that
+ * predates us and proves nothing.
+ *
+ * Callers must not pass an empty `changes`: there is deliberately no early
+ * return, so it issues a full no-op rewrite of the record. Whether there is work
+ * to do belongs to the caller that assembled `changes` — see tockifyApplyJob_ —
+ * and defining it in two places is how the two definitions drift.
  *
  * @param {string} cookie
  * @param {string} uid
- * @param {{imageSetId: string=, addTag: string=}} changes
+ * @param {{imageSetId?: string, addTag?: string}} changes
  * @returns {{success: true}|{error: string}}
  */
 function tockifyUpdateEventGroup_(cookie, uid, changes) {
+  // Every other failure here returns {error}; without this a missing argument
+  // throws a TypeError instead, and only AFTER the GET has already gone out.
+  changes = changes || {};
+
   var path = '/api/eventgroup/' + TOCKIFY_CALID + '/' + uid;
 
   var getRes = tockifyFetch_(path, cookie);
@@ -372,15 +392,37 @@ function tockifyUpdateEventGroup_(cookie, uid, changes) {
     return { error: 'eventgroup GET returned HTTP ' + getRes.getResponseCode() };
   }
 
+  // The body excerpt is the whole diagnostic: a non-JSON 200 is almost always an
+  // HTML login or error page, and "session expired" reads differently from
+  // "endpoint moved" in the first line. An unattended trigger produces nothing
+  // but this email.
   var group;
   try {
     group = JSON.parse(getRes.getContentText());
   } catch (e) {
-    return { error: 'eventgroup GET returned non-JSON' };
+    return { error: 'eventgroup GET returned non-JSON: ' +
+      getRes.getContentText().substring(0, 120) };
+  }
+  // `null` and bare scalars are valid JSON and parse without throwing. Defaulting
+  // them to {} would be worse than throwing: we PUT the whole record, so it would
+  // overwrite a real event with just the fields we set. Refuse.
+  if (!group || typeof group !== 'object' || group instanceof Array) {
+    return { error: 'eventgroup GET returned no record: ' +
+      getRes.getContentText().substring(0, 120) };
   }
 
   if (changes.imageSetId) group.imageIdNg = changes.imageSetId;
-  if (changes.addTag) group.tags = tockifyAddTag_(group.tags, changes.addTag);
+  if (changes.addTag) {
+    // tockifyAddTag_ falls back to [] on an unrecognised shape, which is right
+    // for the helper alone but destructive here: we PUT the whole record, so
+    // "ignore what I could not parse" becomes "replace the tag list with only
+    // ours" — and it would report success. Refuse instead.
+    if (group.tags && !(group.tags instanceof Array)) {
+      return { error: 'eventgroup tags came back as ' + (typeof group.tags) +
+        ', refusing to overwrite' };
+    }
+    group.tags = tockifyAddTag_(group.tags, changes.addTag);
+  }
 
   var putRes = tockifyFetch_(path, cookie, { method: 'put', payload: group });
   if (putRes.getResponseCode() !== 200) {
@@ -392,14 +434,32 @@ function tockifyUpdateEventGroup_(cookie, uid, changes) {
   try {
     saved = JSON.parse(putRes.getContentText());
   } catch (e) {
-    return { error: 'eventgroup PUT returned non-JSON' };
+    return { error: 'eventgroup PUT returned non-JSON: ' +
+      putRes.getContentText().substring(0, 120) };
+  }
+  // Same reasoning as the GET, and the checks below would throw on a null.
+  // Unverifiable is a failure, not a success.
+  if (!saved || typeof saved !== 'object' || saved instanceof Array) {
+    return { error: 'eventgroup PUT returned no record: ' +
+      putRes.getContentText().substring(0, 120) };
   }
 
   if (changes.imageSetId && (!saved.imageSets || !saved.imageSets.length)) {
     return { error: 'image did not stick — imageSets came back empty' };
   }
+  // Counting imageSets is not enough on an event that already had an image: the
+  // old one keeps that array populated while our id is quietly dropped. The
+  // `saved.imageIdNg &&` guard leaves an absent field on the old behaviour, so
+  // this cannot invent a failure before the field is confirmed on a live run.
+  if (changes.imageSetId && saved.imageIdNg && saved.imageIdNg !== changes.imageSetId) {
+    return { error: 'image did not stick — imageIdNg came back "' + saved.imageIdNg + '"' };
+  }
   if (changes.addTag && !tockifyHasTag_(saved.tags, changes.addTag)) {
-    return { error: 'tag did not stick — "' + changes.addTag + '" absent from the saved tags' };
+    // Naming the image explicitly: the two share one PUT, so a tag failure
+    // reported bare reads as "nothing landed" and invites a rerun that
+    // re-uploads and re-registers a second image set for the same event.
+    return { error: 'tag did not stick — "' + changes.addTag +
+      '" absent from the saved tags (any image in the same write did land)' };
   }
   return { success: true };
 }

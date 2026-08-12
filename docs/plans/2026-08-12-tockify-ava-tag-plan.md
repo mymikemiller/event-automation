@@ -988,13 +988,36 @@ function test_tockifyAvaTag_live() {
 }
 ```
 
+**Also log `version` from both round trips.** Add a temporary `Logger.log` of
+`group.version` after the GET and `saved.version` after the PUT in
+`tockifyUpdateEventGroup_`. If it increments, that is a free universal "the
+server really did mutate this record" signal — one that would independently
+catch an ignored-field false positive for *any* field, not just the two we check
+by name. If it does not move, we learn the field is decorative. This run has to
+happen anyway; the extra line costs nothing and answers the optimistic-locking
+question left open in Task 5.
+
 **Step 3: Ask the user to run, in this order**
+
+> **PRECONDITION — the test event must NOT already carry the AVA tag.**
+> This is the whole point of the run. Offline work established where the tag
+> *lives* on the record; only a live PUT can establish that the field is
+> *writable*. On an already-tagged event `tockifyAddTag_` returns the list
+> unchanged, the PUT is a no-op for tags, and `tockifyHasTag_` passes on a tag
+> that predates us — the test goes green having verified nothing.
+>
+> So before running, open the event in the Tockify UI and confirm it carries no
+> `Austin-Vegan-Association` tag. **Do not use uid 111** ("Lunch at The Vegan
+> Yacht") — the Task 3 probe found it already tagged, making it the one event
+> guaranteed to produce a vacuous pass. Pick an untagged upcoming AVA event, or
+> remove the tag by hand first.
 
 Stop and ask the user to run from the editor and report results:
 
 1. `test_tockifyIsAvaEvent_live` — expect `PASSED` in the log
-2. `test_tockifyAvaTag_live` — after editing the three constants to a real event
-3. Check the event on `https://tockify.com/austin.vegan.events` — the tag should show, and any tag it already had should still be there
+2. `test_tockifyAvaTag_live` — after editing the three constants to a real event, and after confirming the precondition above
+3. Check the event on `https://tockify.com/austin.vegan.events` — the tag should now be present where it was absent before the run, and any tag it already had should still be there
+4. Report the two `version` values. Expected: the PUT value is higher than the GET value
 
 **Step 4: Confirm the regression case**
 
