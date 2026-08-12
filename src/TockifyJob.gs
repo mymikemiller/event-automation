@@ -105,6 +105,12 @@ function processTockifyQueue_() {
  *   - a `find:` or `aborted:` line means the job stopped there, so no stage
  *     after it ran at all and none of them may be assumed either way.
  *
+ * `image:` covers both failure modes of that stage, returned and thrown, so
+ * `aborted:` now means something OUTSIDE the image stage truncated the job.
+ * The image block owns its own catch because the two modes must cost the same:
+ * do the work that can be done is not conditional on how the work that could
+ * not be done reported itself.
+ *
  * The prefixes on the two early exits are what make that vocabulary total. Both
  * of them leave before `problems` is ever collected — a failed lookup here, and
  * a throw caught by the caller — so unprefixed they produce an email carrying
@@ -133,13 +139,23 @@ function tockifyApplyJob_(cookie, job) {
   var changes = {};
 
   if (job.imageUrl) {
-    var up = tockifyUploadImage_(job.imageUrl);
-    if (up.error) {
-      problems.push('image: ' + up.error);
-    } else {
-      var reg = tockifyRegisterImage_(cookie, up.uuid, tockifyImageName_(job.imageUrl));
-      if (reg.error) problems.push('image: ' + reg.error);
-      else changes.imageSetId = reg.imageSetId;
+    try {
+      var up = tockifyUploadImage_(job.imageUrl);
+      if (up.error) {
+        problems.push('image: ' + up.error);
+      } else {
+        var reg = tockifyRegisterImage_(cookie, up.uuid, tockifyImageName_(job.imageUrl));
+        if (reg.error) problems.push('image: ' + reg.error);
+        else changes.imageSetId = reg.imageSetId;
+      }
+    } catch (e) {
+      // A thrown image failure must cost no more than a returned one. Without
+      // this the two modes diverge on the same stage: an upload that returns
+      // {error} leaves the tag applicable and still writes it, while an upload
+      // that throws unwinds to the caller's net and loses the tag on a job that
+      // then dequeues. tockifyUploadImage_ parses its poll response unguarded,
+      // so a throw here is the likeliest real failure in this job.
+      problems.push('image: ' + tockifyErrorText_(e));
     }
   }
 
