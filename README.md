@@ -163,11 +163,20 @@ Four details worth knowing:
   saved record for exactly that reason.
 
 If an event has not appeared in Tockify within two hours, the job is dropped and
-you get an email; any other failure drops it on the spot. That email lists every
-problem the job hit rather than only the first, each line prefixed `image:`,
-`host group:` or `write:` — a stage absent from the list is one that worked, so
-a lone `host group:` line means the flyer landed and only the tag did not. None
-of these endpoints are documented or contractual, so failures are loud by
+you get an email saying so. Any other failure drops it on the spot and emails
+every problem the job hit rather than only the first. Each of those lines carries
+a prefix, and the prefixes come in two kinds that must not be read alike:
+
+- `image:`, `host group:` and `write:` name a stage that failed, whether it
+  returned an error or threw. A stage with no line ran and worked — absence is
+  the success signal, which is why nothing separately reports what was applied —
+  so a lone `host group:` line means the flyer landed and only the tag did not.
+- `find:` and `aborted:` mean the job stopped there: the Tockify event lookup
+  failed, or an exception outside the image stage cut the run short. Stages
+  missing after one of these never ran, so nothing can be assumed about them
+  either way.
+
+None of these endpoints are documented or contractual, so failures are loud by
 design.
 
 Run `installTockifyTrigger` once from the editor to install the trigger.
