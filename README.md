@@ -109,6 +109,15 @@ Matching is on title **and** exact start time. Title alone is not enough, since
 repeating events share one. A multi-date event syncs to Tockify as a single
 repeating record, so there is one image to set no matter how many dates it has.
 
+The queue is one JSON string in one script property, capped at 9KB — between
+about 19 and 27 pending jobs, depending on how long the source URLs are. Past
+that the job is not stored and the submission warns rather than failing, because
+the calendar event, the Drive file and the attachment have all landed by then
+and only the Tockify follow-up is missed; the warning tells you to set the image
+and tag by hand. That ceiling is far above what a hand-driven tool reaches in a
+day, but it is real and it does not correct itself — nothing prunes the queue,
+and a sustained Tockify login outage stops it draining at all.
+
 ### Tagging AVA-hosted events
 
 An event is AVA's when the URL you submitted is a Meetup event under the
