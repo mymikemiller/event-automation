@@ -109,21 +109,10 @@ Matching is on title **and** exact start time. Title alone is not enough, since
 repeating events share one. A multi-date event syncs to Tockify as a single
 repeating record, so there is one image to set no matter how many dates it has.
 
-The queue is one JSON string in one script property, capped at 9KB — between
-about 19 and 27 pending jobs, depending on how long the source URLs are. Past
-that the job is not stored and the submission warns rather than failing, because
-the calendar event, the Drive file and the attachment have all landed by then
-and only the Tockify follow-up is missed; the warning tells you to set the image
-and tag by hand. That ceiling is far above what a hand-driven tool reaches in a
-day, but it is real and it does not correct itself — nothing prunes the queue,
-and a sustained Tockify login outage stops it draining at all.
-
-### Tagging AVA-hosted events
-
-An event is AVA's when the URL you submitted is a Meetup event under the
-`vegaustin` group, and it gets the `Austin-Vegan-Association` tag. That link
-rides along in the queued job, so the host is decided from what was pasted
-rather than from anything Tockify holds.
+The tag is `Austin-Vegan-Association`, and an event earns it when the URL you
+submitted is a Meetup event under the `vegaustin` group. That link rides along in
+the queued job, so the host is decided from what was pasted rather than from
+anything Tockify holds.
 
 `tockifyAvaHost_` (`src/TockifyUtil.gs`) answers `yes`, `no` or `unknown` —
 three states rather than a boolean because a canonical
@@ -147,11 +136,25 @@ further rules fall out of the same trap: the match needs an event ID after
 `/events/`, so a group's listing page is not read as an event, and the *first*
 `/events/` segment decides, so a URL sitting inside a query string cannot win.
 
-Because the tag has nothing to do with the flyer, an event is now queued when it
-has an image **or** its host group is anything other than a definite `no` — an
+Because the tag has nothing to do with the flyer, an event is queued when it has
+an image **or** its host group is anything other than a definite `no` — an
 AVA event submitted without a flyer still gets tagged, and such a job does only
 the tag write. An `unknown` link is queued under the same rule and simply finds
 nothing to do once it resolves to another group.
+
+The queue itself is one JSON string in one script property, capped at 9KB. A job
+runs from about 180 bytes with no image up to around 630 with both URLs long, so
+the ceiling is anywhere between roughly 50 pending jobs and about 14 — assume the
+low end. The image URL is the lever there, not the source URL: a Facebook CDN
+link carries some 330 characters of signed parameters, where the difference
+between a canonical Meetup link and a tracked one is about 120.
+
+Past the cap the job is not stored and the submission warns rather than failing,
+because the calendar event, the Drive file and the attachment have all landed by
+then and only the Tockify follow-up is missed; the warning tells you to set the
+image and tag by hand. That ceiling is far above what a hand-driven tool reaches
+in a day, but it is real and it does not correct itself — nothing prunes the
+queue, and a sustained Tockify login outage stops it draining at all.
 
 Four details worth knowing:
 
