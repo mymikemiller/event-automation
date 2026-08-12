@@ -1,4 +1,39 @@
 function test_tockifyUtil() {
+  // tockifyAvaHost_ — three states, because only the short link costs a fetch
+  var hostCases = [
+    // Canonical AVA event URLs, with and without the trailing slash.
+    ['https://www.meetup.com/vegaustin/events/315879624/', 'yes'],
+    ['https://www.meetup.com/vegaustin/events/315879624', 'yes'],
+    ['meetup.com/vegaustin/events/313482523/?eventOrigin=group_upcoming_events', 'yes'],
+    // The mispair trap: the QUERY STRING names vegaustin, the PATH names the
+    // group that actually hosts it. Anything not anchored on the path tags
+    // other groups' events as ours.
+    ['meetup.com/vegan-adventure-club-austin-tx/events/314564938/?slug=vegaustin', 'no'],
+    // And the inverse — path is AVA, query names another group.
+    ['meetup.com/vegaustin/events/313891224/?slug=other-group&eventId=307154188', 'yes'],
+    // Another group.
+    ['https://www.meetup.com/vegan-adventure-club-austin-tx/events/314564938/', 'no'],
+    // Shortened and tracked forms: not decidable without a fetch.
+    ['https://meetu.ps/e/Qbwn8/1qvFq/i', 'unknown'],
+    ['meetu.ps/e/Qbwn8/1qvFq/i', 'unknown'],
+    ['meetup.com/ls/click?upn=u001.NY3oBFzZ5LJDG7YcnfSAKsQAD0GnFi1zzMJ-2FAp8', 'unknown'],
+    // A lookalike domain must not read as Meetup.
+    ['https://notmeetup.com/vegaustin/events/315879624/', 'no'],
+    // Group-level URL carries no event; not an event link.
+    ['https://www.meetup.com/vegaustin/', 'no'],
+    // Not Meetup at all, and the empty cases.
+    ['https://www.facebook.com/events/1234567890/', 'no'],
+    ['', 'no'],
+    [null, 'no'],
+    [undefined, 'no']
+  ];
+  hostCases.forEach(function (c) {
+    var got = tockifyAvaHost_(c[0]);
+    if (got !== c[1]) {
+      throw new Error('tockifyAvaHost_(' + JSON.stringify(c[0]) + ') -> ' + got + ', want ' + c[1]);
+    }
+  });
+
   // tockifyImageName_ — Tockify names the library entry from this
   var nameCases = [
     ['https://scontent.example.com/v/t39/758244966_1023.webp?stp=dst&oh=abc',
@@ -79,6 +114,45 @@ var TOCKIFY_CALNAME = 'austin.vegan.events';
 var UPLOADCARE_PUB_KEY = 'e14168cd40d42bd3b36c';
 var TOCKIFY_GIVE_UP_MS = 2 * 60 * 60 * 1000;
 var TOCKIFY_QUEUE_KEY = 'TOCKIFY_IMAGE_QUEUE';
+var AVA_MEETUP_SLUG = 'vegaustin';
+var AVA_TOCKIFY_TAG = 'Austin-Vegan-Association';
+
+/**
+ * Whether a submitted event URL points at an event Austin Vegan Association
+ * hosts on Meetup.
+ *
+ * Three states rather than a boolean, because the answer is free for a
+ * canonical URL and costs an HTTP round trip for a shortened one. Returning
+ * 'unknown' lets the caller decide where to pay that cost — here, inside the
+ * retryable background job rather than in submitEvent.
+ *
+ * The slug is read from the /events/ PATH segment, for the reason documented on
+ * meetupExtractEventId_ (MeetupService.gs): a real entry on this calendar reads
+ *   meetup.com/vegaustin/events/313891224/?slug=vegaustin&eventId=307154188
+ * so a bare indexOf('vegaustin') also fires on another group's event that
+ * merely carries ?slug=vegaustin, tagging events AVA does not host.
+ *
+ * Deliberately NOT tied to MEETUP_GROUPS — that is the notifier's watch list
+ * and may grow to include groups AVA does not host.
+ *
+ * @param {string} url
+ * @returns {string} 'yes' | 'no' | 'unknown'
+ */
+function tockifyAvaHost_(url) {
+  if (!url) return 'no';
+  var s = String(url);
+
+  // (?:^|[\/.]) so notmeetup.com and meetup.com.evil.test do not match.
+  var m = s.match(/(?:^|[\/.])meetup\.com\/([^\/\s?#]+)\/events\//i);
+  if (m) return m[1].toLowerCase() === AVA_MEETUP_SLUG ? 'yes' : 'no';
+
+  // Share shortener and Meetup's own click tracker: the group is recoverable
+  // only by following the redirect.
+  if (/(?:^|[\/.])meetu\.ps\//i.test(s)) return 'unknown';
+  if (/(?:^|[\/.])meetup\.com\/ls\/click/i.test(s)) return 'unknown';
+
+  return 'no';
+}
 
 /**
  * Filename Tockify should use for the image library entry, taken from the
