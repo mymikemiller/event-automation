@@ -55,11 +55,15 @@ function processTockifyQueue_() {
     var job = jobs[i];
 
     // Routed into the same path as an {error} result — see the note above.
+    // "aborted:" is not decoration: this error is built out here, outside the
+    // problem list tockifyApplyJob_ collects, so without the prefix the email
+    // carries no stage lines and reads under that function's documented rule as
+    // "every stage worked" when the job in fact stopped mid-flight.
     var result;
     try {
       result = tockifyApplyJob_(login.cookie, job);
     } catch (e) {
-      result = { error: 'unhandled exception: ' + tockifyErrorText_(e) };
+      result = { error: 'aborted: unhandled exception: ' + tockifyErrorText_(e) };
     }
 
     if (result.success) continue; // done — drop from the queue
@@ -73,7 +77,10 @@ function processTockifyQueue_() {
     tockifyNotify_(
       'Tockify update failed: ' + job.title,
       (result.error || 'event never appeared in Tockify') +
-      (job.imageUrl ? '\n\nImage: ' + job.imageUrl : '') +
+      // "Image URL:", not "Image:" — the problem list above can carry an
+      // "image:" line, and two meanings one shift-key apart in a body someone
+      // skims at 7am is how the wrong one gets read.
+      (job.imageUrl ? '\n\nImage URL: ' + job.imageUrl : '') +
       '\nEvent link: ' + (job.sourceUrl || '(none)') +
       '\nTries: ' + job.tries
     );
@@ -91,9 +98,20 @@ function processTockifyQueue_() {
  * failed upload must not cost an AVA event its tag. Every stage that can still
  * run, runs, and the caller gets one email naming all of them.
  *
- * The invariant the email leans on: every failure contributes a line, so a
- * stage with no line is a stage that worked. That is why nothing separately
- * reports what was applied — absence is the success signal.
+ * The rule the email leans on, in both halves, because half of it is a lie:
+ *   - an `image:`, `host group:` or `write:` line means that stage failed, and
+ *     a stage with no line ran and worked. That is why nothing separately
+ *     reports what was applied — absence is the success signal.
+ *   - a `find:` or `aborted:` line means the job stopped there, so no stage
+ *     after it ran at all and none of them may be assumed either way.
+ *
+ * The prefixes on the two early exits are what make that vocabulary total. Both
+ * of them leave before `problems` is ever collected — a failed lookup here, and
+ * a throw caught by the caller — so unprefixed they produce an email carrying
+ * no stage lines, which under the first half alone reads as "every stage
+ * worked" when in fact none of them ran. The throw path is the sharper of the
+ * two: tockifyUploadImage_ parses JSON unguarded in its poll loop, so it is the
+ * likeliest way this file fails in anger, and it silently drops a due tag.
  *
  * There is deliberately no warning/error split any more. It never carried
  * behaviour — a warning and an error both emailed and both dequeued — so the
@@ -109,7 +127,7 @@ function processTockifyQueue_() {
 function tockifyApplyJob_(cookie, job) {
   var found = tockifyFindEvent_(cookie, job.title, job.startMillis);
   if (found.notFound) return { notFound: true };
-  if (found.error) return { error: found.error };
+  if (found.error) return { error: 'find: ' + found.error };
 
   var problems = [];
   var changes = {};
@@ -167,9 +185,21 @@ function tockifyApplyJob_(cookie, job) {
  * @returns {string}
  */
 function tockifyErrorText_(e) {
-  var msg = (e && e.message) ? String(e.message) : String(e);
+  // null and undefined first: String(undefined) is the truthy "undefined", so
+  // an emptiness check never catches them and the email says nothing at the
+  // moment it matters most — the case this function exists for.
+  if (e === null || e === undefined) return '(' + String(e) + ' thrown)';
+
+  var msg = e.message ? String(e.message) : String(e);
   if (!msg) msg = '(empty ' + (typeof e) + ' thrown)';
-  return (e && e.stack) ? msg + '\n' + e.stack : msg;
+
+  var stack = e.stack ? String(e.stack) : '';
+  if (!stack) return msg;
+
+  // A V8 stack already opens with "Error: <message>", so prepending prints the
+  // message twice. Guarded rather than assumed: a runtime whose stack omits it
+  // still needs it, and this email is the only copy anyone gets.
+  return stack.indexOf(msg) === -1 ? msg + '\n' + stack : stack;
 }
 
 /**
