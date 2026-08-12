@@ -38,6 +38,83 @@ function test_tockifyIsAvaEvent_live() {
 }
 
 /**
+ * Reports where `tagset` actually lives on an authenticated event group.
+ *
+ * Read-only: a single GET, no PUT. Run it from the editor and paste the log.
+ *
+ * We cannot guess this one. The public ngevent record nests the field at
+ * content.tagset.tags.default, but tockifySetEventImage_ shows the authenticated
+ * eventgroup record is flattened at least for images — it writes `imageIdNg` and
+ * reads `imageSets` at the top level, where ngevent has both under `content`.
+ * Writing the wrong body shape to this endpoint returns 404 Not found and
+ * writing the wrong field returns a silent 200, so a guess fails quietly.
+ *
+ * The two named checks answer the likely question; the value search answers the
+ * unlikely one, where the eventgroup calls the field something else entirely and
+ * both named checks come back undefined. It reports paths and types only —
+ * never values — so a description mentioning the tag cannot leak into the log.
+ *
+ * uid 111 is "Lunch at The Vegan Yacht", confirmed against the public ngevent
+ * feed on 2026-08-12 to carry the Austin-Vegan-Association tag.
+ */
+function test_tockifyEventGroupShape_live() {
+  var login = tockifySession_();
+  if (login.error) throw new Error(login.error);
+
+  var res = tockifyFetch_('/api/eventgroup/' + TOCKIFY_CALID + '/111', login.cookie);
+  Logger.log('HTTP ' + res.getResponseCode());
+  if (res.getResponseCode() !== 200) throw new Error(res.getContentText().substring(0, 300));
+
+  var group;
+  try {
+    group = JSON.parse(res.getContentText());
+  } catch (e) {
+    throw new Error('eventgroup returned non-JSON: ' + res.getContentText().substring(0, 300));
+  }
+
+  // Describes a value without printing it: enough to tell a populated tagset
+  // from an empty one, or an object from the array a wrapper would return.
+  var describe = function (v) {
+    if (v === null) return 'null';
+    if (v instanceof Array) return 'array[' + v.length + ']';
+    if (typeof v === 'object') return 'object{' + Object.keys(v).length + '}';
+    return typeof v;
+  };
+
+  Logger.log('body is ' + describe(group));
+
+  var summary = Object.keys(group).map(function (k) {
+    return k + ':' + describe(group[k]);
+  });
+  Logger.log('top-level: ' + summary.join(', '));
+
+  Logger.log('group.tagset = ' + JSON.stringify(group.tagset));
+  Logger.log('group.content && group.content.tagset = ' +
+    JSON.stringify(group.content && group.content.tagset));
+
+  // Walks the record for the tag string itself, so an unexpected field name is
+  // diagnosable from this one run rather than needing a second probe.
+  var hits = [];
+  var walk = function (node, path, depth) {
+    if (hits.length >= 20 || depth > 8 || node === null || typeof node !== 'object') return;
+    Object.keys(node).forEach(function (k) {
+      var child = node[k];
+      var childPath = (node instanceof Array) ? path + '[' + k + ']' : (path ? path + '.' + k : k);
+      if (child === AVA_TOCKIFY_TAG) {
+        hits.push(childPath);
+      } else {
+        walk(child, childPath, depth + 1);
+      }
+    });
+  };
+  walk(group, '', 0);
+
+  Logger.log('paths holding "' + AVA_TOCKIFY_TAG + '": ' +
+    (hits.length ? hits.join(', ')
+      : '(none — the eventgroup record does not carry the tag at all)'));
+}
+
+/**
  * Logs in to Tockify and returns the session cookie, caching it for 6 hours.
  * Tockify issues no API token — auth is the httpOnly TKFSession cookie only.
  * @param {boolean} [forceFresh] - skip the cache after a rejected call
