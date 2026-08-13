@@ -2,6 +2,12 @@
 // Runs Apps Script test_* functions locally under Node.
 // Only load PURE .gs files here — anything touching Calendar/Drive/Properties
 // must stay an editor-only test.
+//
+// Build test fixtures inside the .gs file, or inside the vm context — never out
+// here in the host realm. `instanceof Array` is realm-sensitive: a host-built
+// array fails it inside the sandbox, so a function quietly takes its
+// malformed-input path and a probe reports a false negative on code that is
+// fine. That has cost several people an hour each on TockifyUtil.gs.
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');

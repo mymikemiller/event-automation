@@ -13,6 +13,171 @@ function test_tockifyUploadImage_live() {
 }
 
 /**
+ * End-to-end: queues a tag-only job for an event already in Tockify and drains
+ * the queue once, then reports whether the tag landed.
+ *
+ * PRECONDITION — remove the Austin-Vegan-Association tag from this event in the
+ * Tockify UI first. With the tag already present tockifyAddTag_ returns the list
+ * unchanged, the PUT is a no-op, and the verification passes on a tag that
+ * predates this run. That would prove nothing about the one thing no offline
+ * test can establish: that `tags` is writable at all. This function refuses to
+ * run rather than let that happen.
+ *
+ * Also logs `version` before and after. If it increments, the server really did
+ * mutate the record — a signal worth having for any future field.
+ *
+ * Ran green on 2026-08-13: tags went [] -> ["Austin-Vegan-Association"] on a
+ * Google-synced external event, which is what proved the field writable.
+ * `version` stayed 1 across that write, so it is not a mutation signal.
+ *
+ * The fixture below is spent — that event is tagged again. To re-run after a
+ * change to the tag path, re-point the four constants at any AVA event on the
+ * calendar and clear its tag in the Tockify UI first.
+ */
+function test_tockifyAvaTagEndToEnd_live() {
+  var TITLE = '🧘 August Afternoon Yoga 🧘';
+  var START = 1788111000000;
+  var SOURCE = 'https://www.meetup.com/vegaustin/events/315879894/';
+  var UID = '135';
+
+  var login = tockifySession_();
+  if (login.error) throw new Error(login.error);
+
+  var path = '/api/eventgroup/' + TOCKIFY_CALID + '/' + UID;
+  var before = JSON.parse(tockifyFetch_(path, login.cookie).getContentText());
+  Logger.log('BEFORE: tags=' + JSON.stringify(before.tags) + ' version=' + before.version);
+
+  if (tockifyHasTag_(before.tags, AVA_TOCKIFY_TAG)) {
+    throw new Error('PRECONDITION FAILED: the event still carries ' + AVA_TOCKIFY_TAG +
+      '. Remove it in the Tockify UI first, or this run cannot fail and proves nothing.');
+  }
+
+  tockifyQueueAdd_(TITLE, START, '', SOURCE);
+  processTockifyQueue_();
+
+  var after = JSON.parse(tockifyFetch_(path, login.cookie).getContentText());
+  Logger.log('AFTER : tags=' + JSON.stringify(after.tags) + ' version=' + after.version);
+  Logger.log('queue remaining: ' + JSON.stringify(tockifyQueueLoad_()));
+
+  if (!tockifyHasTag_(after.tags, AVA_TOCKIFY_TAG)) {
+    throw new Error('tag did not land — tags came back ' + JSON.stringify(after.tags));
+  }
+  Logger.log('test_tockifyAvaTagEndToEnd_live: PASSED — tag written to a live record');
+}
+
+function test_tockifyIsAvaEvent_live() {
+  // Verified 2026-08-12: this short link 302s to
+  // www.meetup.com/vegaustin/events/315879624/
+  var short = tockifyIsAvaEvent_('https://meetu.ps/e/Qbwn8/1qvFq/i');
+  if (short.error) {
+    throw new Error('short-link resolution failed — an HTTP 404 here likely means the ' +
+      'fixture event was deleted, not that the code broke: ' + short.error);
+  }
+  if (!short.isAva) throw new Error('short link to an AVA event should resolve to isAva');
+
+  // These two must be decided offline. Checking .error is what makes that an
+  // assertion rather than a comment: an {error} result has isAva === undefined,
+  // so the isAva checks below pass just as happily on a URL that went to the
+  // network and failed there.
+  var canonical = tockifyIsAvaEvent_('https://www.meetup.com/vegaustin/events/315879624/');
+  if (canonical.error) throw new Error('canonical URL should need no fetch: ' + canonical.error);
+  if (!canonical.isAva) throw new Error('canonical AVA URL should be isAva');
+
+  var other = tockifyIsAvaEvent_('https://www.facebook.com/events/1234567890/');
+  if (other.error) throw new Error('a Facebook URL should need no fetch: ' + other.error);
+  if (other.isAva) throw new Error('a Facebook URL is not an AVA Meetup event');
+
+  Logger.log('test_tockifyIsAvaEvent_live: PASSED');
+}
+
+/**
+ * Reports where `tagset` actually lives on an authenticated event group.
+ *
+ * ANSWERED — run 2026-08-12. It does not live anywhere: there is no `tagset` key
+ * on the eventgroup record and no `content` wrapper. Tags are a flat top-level
+ * array of bare strings, group.tags = ["Austin-Vegan-Association"], found by the
+ * value search at tags[0]. Neither hypothesis below was right — see
+ * tockifyAddTag_ (TockifyUtil.gs), which is written against this answer, and do
+ * not write the public API's content.tagset.tags.default back to this endpoint.
+ * The rest of this comment records the pre-probe reasoning, kept because it
+ * explains why the value search was worth writing.
+ *
+ * Read-only: a single GET, no PUT. Run it from the editor and paste the log.
+ *
+ * We cannot guess this one. The public ngevent record nests the field at
+ * content.tagset.tags.default, but the image write (now tockifyUpdateEventGroup_)
+ * shows the authenticated eventgroup record is flattened at least for images — it
+ * writes `imageIdNg` and reads `imageSets` at the top level, where ngevent has
+ * both under `content`.
+ * Writing the wrong body shape to this endpoint returns 404 Not found and
+ * writing the wrong field returns a silent 200, so a guess fails quietly.
+ *
+ * The two named checks answer the likely question; the value search answers the
+ * unlikely one, where the eventgroup calls the field something else entirely and
+ * both named checks come back undefined. It reports paths and types only —
+ * never values — so a description mentioning the tag cannot leak into the log.
+ *
+ * uid 111 is "Lunch at The Vegan Yacht", confirmed against the public ngevent
+ * feed on 2026-08-12 to carry the Austin-Vegan-Association tag.
+ */
+function test_tockifyEventGroupShape_live() {
+  var login = tockifySession_();
+  if (login.error) throw new Error(login.error);
+
+  var res = tockifyFetch_('/api/eventgroup/' + TOCKIFY_CALID + '/111', login.cookie);
+  Logger.log('HTTP ' + res.getResponseCode());
+  if (res.getResponseCode() !== 200) throw new Error(res.getContentText().substring(0, 300));
+
+  var group;
+  try {
+    group = JSON.parse(res.getContentText());
+  } catch (e) {
+    throw new Error('eventgroup returned non-JSON: ' + res.getContentText().substring(0, 300));
+  }
+
+  // Describes a value without printing it: enough to tell a populated tagset
+  // from an empty one, or an object from the array a wrapper would return.
+  var describe = function (v) {
+    if (v === null) return 'null';
+    if (v instanceof Array) return 'array[' + v.length + ']';
+    if (typeof v === 'object') return 'object{' + Object.keys(v).length + '}';
+    return typeof v;
+  };
+
+  Logger.log('body is ' + describe(group));
+
+  var summary = Object.keys(group).map(function (k) {
+    return k + ':' + describe(group[k]);
+  });
+  Logger.log('top-level: ' + summary.join(', '));
+
+  Logger.log('group.tagset = ' + JSON.stringify(group.tagset));
+  Logger.log('group.content && group.content.tagset = ' +
+    JSON.stringify(group.content && group.content.tagset));
+
+  // Walks the record for the tag string itself, so an unexpected field name is
+  // diagnosable from this one run rather than needing a second probe.
+  var hits = [];
+  var walk = function (node, path, depth) {
+    if (hits.length >= 20 || depth > 8 || node === null || typeof node !== 'object') return;
+    Object.keys(node).forEach(function (k) {
+      var child = node[k];
+      var childPath = (node instanceof Array) ? path + '[' + k + ']' : (path ? path + '.' + k : k);
+      if (child === AVA_TOCKIFY_TAG) {
+        hits.push(childPath);
+      } else {
+        walk(child, childPath, depth + 1);
+      }
+    });
+  };
+  walk(group, '', 0);
+
+  Logger.log('paths holding "' + AVA_TOCKIFY_TAG + '": ' +
+    (hits.length ? hits.join(', ')
+      : '(none — the eventgroup record does not carry the tag at all)'));
+}
+
+/**
  * Logs in to Tockify and returns the session cookie, caching it for 6 hours.
  * Tockify issues no API token — auth is the httpOnly TKFSession cookie only.
  * @param {boolean} [forceFresh] - skip the cache after a rejected call
@@ -222,15 +387,62 @@ function tockifyRegisterImage_(cookie, uuid, name) {
 }
 
 /**
- * Sets the featured image on a Tockify event group.
- * `imageIdNg` is the write field — writing `imageSets` directly returns 200
- * and is silently ignored. The server hydrates `imageSets` from `imageIdNg`.
+ * Applies the image and/or the AVA tag to a Tockify event group in one write.
+ *
+ * One GET/PUT rather than two: both fields live in the same record, so separate
+ * cycles would double the round trips and let the pair land half-applied.
+ *
+ * `imageIdNg` is the write field for the image — writing `imageSets` directly
+ * returns 200 and is silently ignored. The server hydrates `imageSets` from
+ * `imageIdNg`, so the read-back checks BOTH: `imageSets` non-empty proves the
+ * server processed the write rather than just storing a string, and
+ * `imageIdNg` equalling what we sent proves it stored OUR id. Neither implies
+ * the other. Counting `imageSets` alone passes on an event that already had an
+ * image and whose `imageIdNg` the server ignored — the record comes back with a
+ * populated `imageSets` belonging to the old image.
+ *
+ * We PUT the whole record, so `imageSets` goes back up on every write even
+ * though it is documented write-ignored. Harmless today. If Tockify ever makes
+ * it writable, that echo becomes a stale write racing `imageIdNg` and this is
+ * the first place to look.
+ *
+ * `tags` is the field for the tag: a flat top-level array of bare strings,
+ * confirmed by live probe on 2026-08-12 (test_tockifyEventGroupShape_live)
+ * against this same eventgroup record. The public ngevent API's nested
+ * content.tagset.tags.default is NOT what this endpoint takes — there is no
+ * `tagset` key and no `content` wrapper on this record at all, and an
+ * unrecognised body field comes back as a silent 200, so writing the public
+ * shape would look saved and change nothing.
+ *
+ * That probe was read-only — one GET, no PUT — so it establishes where the tag
+ * LIVES, not that the field is writable. The read-back is what makes that safe
+ * to act on: were `tags` a read-only projection, the server would echo the
+ * pre-existing list, tockifyHasTag_ would return false, and this returns a loud
+ * "tag did not stick" rather than a silent success. Writability is only ever
+ * established by an end-to-end run against a live event that does NOT already
+ * carry the tag — on an already-tagged event the read-back passes on a tag that
+ * predates us and proves nothing.
+ *
+ * Both read-backs always run, and the error names every field that failed, one
+ * per line — the same collect-then-report shape as tockifyApplyJob_. Returning
+ * at the first was a silent claim about the second: under the rule those callers
+ * document, a field with no line landed.
+ *
+ * Callers must not pass an empty `changes`: there is deliberately no early
+ * return, so it issues a full no-op rewrite of the record. Whether there is work
+ * to do belongs to the caller that assembled `changes` — see tockifyApplyJob_ —
+ * and defining it in two places is how the two definitions drift.
+ *
  * @param {string} cookie
  * @param {string} uid
- * @param {string} imageSetId
+ * @param {{imageSetId?: string, addTag?: string}} changes
  * @returns {{success: true}|{error: string}}
  */
-function tockifySetEventImage_(cookie, uid, imageSetId) {
+function tockifyUpdateEventGroup_(cookie, uid, changes) {
+  // Every other failure here returns {error}; without this a missing argument
+  // throws a TypeError instead, and only AFTER the GET has already gone out.
+  changes = changes || {};
+
   var path = '/api/eventgroup/' + TOCKIFY_CALID + '/' + uid;
 
   var getRes = tockifyFetch_(path, cookie);
@@ -238,18 +450,163 @@ function tockifySetEventImage_(cookie, uid, imageSetId) {
     return { error: 'eventgroup GET returned HTTP ' + getRes.getResponseCode() };
   }
 
-  var group = JSON.parse(getRes.getContentText());
-  group.imageIdNg = imageSetId;
+  // The body excerpt is the whole diagnostic: a non-JSON 200 is almost always an
+  // HTML login or error page, and "session expired" reads differently from
+  // "endpoint moved" in the first line. An unattended trigger produces nothing
+  // but this email.
+  var group;
+  try {
+    group = JSON.parse(getRes.getContentText());
+  } catch (e) {
+    return { error: 'eventgroup GET returned non-JSON: ' +
+      getRes.getContentText().substring(0, 120) };
+  }
+  // `null` and bare scalars are valid JSON and parse without throwing. Defaulting
+  // them to {} would be worse than throwing: we PUT the whole record, so it would
+  // overwrite a real event with just the fields we set. Refuse.
+  if (!group || typeof group !== 'object' || group instanceof Array) {
+    return { error: 'eventgroup GET returned no record: ' +
+      getRes.getContentText().substring(0, 120) };
+  }
+
+  if (changes.imageSetId) group.imageIdNg = changes.imageSetId;
+  if (changes.addTag) {
+    // tockifyAddTag_ falls back to [] on an unrecognised shape, which is right
+    // for the helper alone but destructive here: we PUT the whole record, so
+    // "ignore what I could not parse" becomes "replace the tag list with only
+    // ours" — and it would report success. Refuse instead.
+    if (group.tags && !(group.tags instanceof Array)) {
+      return { error: 'eventgroup tags came back as ' + (typeof group.tags) +
+        ', refusing to overwrite' };
+    }
+    group.tags = tockifyAddTag_(group.tags, changes.addTag);
+  }
 
   var putRes = tockifyFetch_(path, cookie, { method: 'put', payload: group });
   if (putRes.getResponseCode() !== 200) {
     return { error: 'eventgroup PUT returned HTTP ' + putRes.getResponseCode() };
   }
 
-  // A 200 alone does not mean the image was accepted — check it stuck.
-  var saved = JSON.parse(putRes.getContentText());
-  if (!saved.imageSets || !saved.imageSets.length) {
-    return { error: 'image did not stick — imageSets came back empty' };
+  // A 200 alone does not mean the write was accepted — check each one stuck.
+  var saved;
+  try {
+    saved = JSON.parse(putRes.getContentText());
+  } catch (e) {
+    return { error: 'eventgroup PUT returned non-JSON: ' +
+      putRes.getContentText().substring(0, 120) };
   }
-  return { success: true };
+  // Same reasoning as the GET, and the checks below would throw on a null.
+  // Unverifiable is a failure, not a success.
+  if (!saved || typeof saved !== 'object' || saved instanceof Array) {
+    return { error: 'eventgroup PUT returned no record: ' +
+      putRes.getContentText().substring(0, 120) };
+  }
+
+  // Both read-backs are decided before either is reported, and neither returns
+  // early. Returning at the first left the other field unexamined while the rule
+  // this function's callers document — a stage with no line ran and worked —
+  // says it landed, and the asymmetry was the tell: the tag branch already named
+  // the image's fate, the image branch never named the tag's.
+  var imageProblem = '';
+  if (changes.imageSetId) {
+    if (!saved.imageSets || !saved.imageSets.length) {
+      imageProblem = 'image did not stick — imageSets came back empty';
+    } else if (saved.imageIdNg && saved.imageIdNg !== changes.imageSetId) {
+      // Counting imageSets is not enough on an event that already had an image:
+      // the old one keeps that array populated while our id is quietly dropped.
+      // The `saved.imageIdNg &&` guard leaves an absent field on the old
+      // behaviour, so this cannot invent a failure before the field is confirmed
+      // on a live run. One image line either way — the two checks are two ways
+      // of catching one failed field, not two failures.
+      imageProblem = 'image did not stick — imageIdNg came back "' + saved.imageIdNg + '"';
+    }
+  }
+
+  var tagProblem = '';
+  if (changes.addTag && !tockifyHasTag_(saved.tags, changes.addTag)) {
+    tagProblem = 'tag did not stick — "' + changes.addTag + '" absent from the saved tags';
+  }
+
+  if (!imageProblem && !tagProblem) return { success: true };
+
+  // Each line names what the OTHER field did, and only when the other field was
+  // actually checked and passed. They share one PUT, so a failure reported bare
+  // reads as "nothing landed" and invites a rerun — which re-uploads and
+  // re-registers a second image set for the same event. With both lines present
+  // nothing needs claiming, and the parenthetical would be a lie.
+  var problems = [];
+  if (imageProblem) {
+    problems.push(imageProblem + (tagProblem ? '' : ' (any tag in the same write did land)'));
+  }
+  if (tagProblem) {
+    problems.push(tagProblem + (imageProblem ? '' : ' (any image in the same write did land)'));
+  }
+  // Newline-joined, matching tockifyApplyJob_: this reaches a human as email
+  // body, and two failures run together on one line is how the second is missed.
+  // Both lines belong to the single `write:` stage the caller prefixes.
+  return { error: problems.join('\n') };
+}
+
+/**
+ * Follows ONE redirect hop and returns the target URL.
+ *
+ * One hop, not a chain: the live meetu.ps link verified on 2026-08-12 lands on
+ * the canonical www.meetup.com URL in a single 302, and an unbounded redirect
+ * chase inside an unattended 5-minute job is a worse failure than a missed tag.
+ *
+ * Nothing here throws — every failure comes back as {error}. Reading the
+ * response lives in tockifyRedirectTarget_ (TockifyUtil.gs), where it is
+ * unit-testable without a network.
+ *
+ * @param {string} url
+ * @returns {{url: string}|{error: string}}
+ */
+function tockifyResolveRedirect_(url) {
+  var res;
+  try {
+    res = UrlFetchApp.fetch(url, {
+      method: 'get',
+      followRedirects: false,
+      muteHttpExceptions: true
+    });
+  } catch (e) {
+    // muteHttpExceptions suppresses error STATUSES; DNS, TLS and timeout still
+    // throw. This dials a third-party shortener named in a human-pasted URL, and
+    // an escaped throw skips the give-up counter and wedges the queue.
+    //
+    // tockifyErrorText_ rather than e.message: this string is carried up as the
+    // `host group:` line of the failure email, and a non-Error throw has no
+    // .message, so bare it renders "fetch failed for <url>: undefined" — the
+    // uninformative email that helper exists to prevent, on the one line that
+    // tells the reader which event to tag by hand.
+    return { error: 'fetch failed for ' + url + ': ' + tockifyErrorText_(e) };
+  }
+
+  return tockifyRedirectTarget_(res.getAllHeaders(), url, res.getResponseCode());
+}
+
+/**
+ * Whether a submitted event URL is an AVA-hosted Meetup event, paying for a
+ * redirect fetch only when the URL is a shortener.
+ *
+ * A resolved URL that is STILL not classifiable is an error, not a `false` —
+ * silently treating it as "not AVA" is how an event goes untagged with no
+ * signal that anything was skipped.
+ *
+ * @param {string} sourceUrl
+ * @returns {{isAva: boolean}|{error: string}}
+ */
+function tockifyIsAvaEvent_(sourceUrl) {
+  var host = tockifyAvaHost_(sourceUrl);
+  if (host !== 'unknown') return { isAva: host === 'yes' };
+
+  var resolved = tockifyResolveRedirect_(sourceUrl);
+  if (resolved.error) return { error: resolved.error };
+
+  var host2 = tockifyAvaHost_(resolved.url);
+  if (host2 === 'unknown') {
+    return { error: 'redirect from ' + sourceUrl + ' reached ' + resolved.url +
+      ', which is still not a canonical Meetup event URL' };
+  }
+  return { isAva: host2 === 'yes' };
 }

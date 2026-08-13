@@ -111,14 +111,44 @@ function submitEvent(eventData) {
     );
   }
 
-  // 6. Queue the Tockify image update. Tockify syncs from Google within
-  //    seconds, but not instantly, so a trigger applies this shortly after.
-  if (eventData.image_url && plan.dates.length) {
-    tockifyQueueAdd_(
-      eventData.title,
-      tockifyStartMillis_(plan.dates[0]),
-      eventData.image_url
-    );
+  // 6. Queue the Tockify update. Tockify syncs from Google within seconds, but
+  //    not instantly, so a trigger applies this shortly after.
+  //
+  //    Queued when there is an image OR the event might be AVA-hosted — an AVA
+  //    event submitted without a flyer still needs its tag. 'unknown' queues
+  //    too — a meetu.ps short link or a meetup.com/ls/click tracker — because
+  //    resolving it here would put a redirect fetch in the submit path; the job
+  //    does it instead. A link that resolves to another group's event leaves the
+  //    job with nothing to do and it says nothing, but an unreachable shortener
+  //    emails rather than skipping the tag silently, so a no-image submission
+  //    can still produce mail with no work done.
+  var avaHost = tockifyAvaHost_(eventData.source_url);
+  var warnings = calResult.warnings || [];
+  if (plan.dates.length && (eventData.image_url || avaHost !== 'no')) {
+    // Warn rather than throw. The calendar event, the Drive file and the
+    // attachment are all already committed by this point, so an escaping
+    // exception reports a bare failure for a submission that mostly succeeded —
+    // and the obvious retry duplicates the event, because createCalendarEvent
+    // does not refuse duplicates and findDuplicateDates only reports them. The
+    // reachable throw is the 9KB property cap (see tockifyQueueSave_), where
+    // setProperty rejects the value and the job is simply not stored. Steps 2
+    // and 5 already degrade this way; this was the one step that could not.
+    try {
+      tockifyQueueAdd_(
+        eventData.title,
+        tockifyStartMillis_(plan.dates[0]),
+        eventData.image_url,
+        eventData.source_url
+      );
+    } catch (e) {
+      // tockifyErrorText_ (TockifyUtil.gs — Apps Script shares one global scope
+      // across files) rather than e.message: this one is read in the browser by
+      // the person who just submitted, and a throw with no .message would show
+      // them "Could not queue the Tockify update (undefined)", which tells them
+      // nothing to report and nothing to act on.
+      warnings = warnings.concat(['Could not queue the Tockify update (' +
+        tockifyErrorText_(e) + ') — set the image and tag by hand in Tockify.']);
+    }
   }
 
   var userEmail = Session.getActiveUser().getEmail();
@@ -132,7 +162,7 @@ function submitEvent(eventData) {
     occurrenceCount: calResult.occurrenceCount,
     dates: dates,
     duplicateDates: duplicateDates,
-    warnings: calResult.warnings || [],
+    warnings: warnings,
     title: eventData.title,
     calendarUrl: calendarUrl,
     driveUrl: driveResult ? driveResult.fileUrl : null,

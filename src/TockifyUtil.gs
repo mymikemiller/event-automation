@@ -1,4 +1,222 @@
 function test_tockifyUtil() {
+  // tockifyAvaHost_ — three states, because only the short link costs a fetch
+  var hostCases = [
+    // Canonical AVA event URLs, with and without the trailing slash.
+    ['https://www.meetup.com/vegaustin/events/315879624/', 'yes'],
+    ['https://www.meetup.com/vegaustin/events/315879624', 'yes'],
+    ['meetup.com/vegaustin/events/313482523/?eventOrigin=group_upcoming_events', 'yes'],
+    // The mispair trap: the QUERY STRING names vegaustin, the PATH names the
+    // group that actually hosts it. Anything not anchored on the path tags
+    // other groups' events as ours.
+    ['meetup.com/vegan-adventure-club-austin-tx/events/314564938/?slug=vegaustin', 'no'],
+    // And the inverse — path is AVA, query names another group.
+    ['meetup.com/vegaustin/events/313891224/?slug=other-group&eventId=307154188', 'yes'],
+    // Another group.
+    ['https://www.meetup.com/vegan-adventure-club-austin-tx/events/314564938/', 'no'],
+    // Shortened and tracked forms: not decidable without a fetch.
+    ['https://meetu.ps/e/Qbwn8/1qvFq/i', 'unknown'],
+    ['meetu.ps/e/Qbwn8/1qvFq/i', 'unknown'],
+    ['meetup.com/ls/click?upn=u001.NY3oBFzZ5LJDG7YcnfSAKsQAD0GnFi1zzMJ-2FAp8', 'unknown'],
+    // Lookalike domains must not read as Meetup — a prefixed host, a suffixed
+    // one, and the shortener's equivalent.
+    ['https://notmeetup.com/vegaustin/events/315879624/', 'no'],
+    ['https://meetup.com.evil.test/vegaustin/events/1/', 'no'],
+    ['https://notmeetu.ps/e/Qbwn8/', 'no'],
+    // Host and slug are both case-insensitive.
+    ['https://www.Meetup.com/VegAustin/events/1/', 'yes'],
+    // Group-level URL carries no event; not an event link. The group's
+    // event-LISTING page is the same story — an event link always carries an
+    // ID, so /events/ with nothing after it must answer the same way.
+    ['https://www.meetup.com/vegaustin/', 'no'],
+    ['https://www.meetup.com/vegaustin/events/', 'no'],
+    // A listing page is where the scan STOPS. Anything further right is not
+    // this URL's event — matching it tags another group's event as ours.
+    ['https://www.meetup.com/other-group/events/?next=https://www.meetup.com/vegaustin/events/999/', 'no'],
+    // Not Meetup at all, and the empty cases.
+    ['https://www.facebook.com/events/1234567890/', 'no'],
+    ['', 'no'],
+    [null, 'no'],
+    [undefined, 'no']
+  ];
+  hostCases.forEach(function (c) {
+    var got = tockifyAvaHost_(c[0]);
+    if (got !== c[1]) {
+      throw new Error('tockifyAvaHost_(' + JSON.stringify(c[0]) + ') -> ' + got + ', want ' + c[1]);
+    }
+  });
+
+  // tockifyRedirectTarget_ — the Location header parsed away from the network,
+  // so the shapes that only ever turn up against a live shortener are pinned
+  // here for free. Fixtures are built in this file on purpose: `instanceof
+  // Array` is realm-sensitive, as tests/run.js warns.
+  var SHORT_REQ = 'https://meetu.ps/e/Qbwn8/1qvFq/i';
+  var CLICK_REQ = 'https://www.meetup.com/ls/click?upn=u001.abc';
+  var targetCases = [
+    // The shape verified live on 2026-08-12.
+    [{ 'Location': 'https://www.meetup.com/vegaustin/events/315879624/?_xtd=x&from=ref' }, SHORT_REQ, 302,
+     'https://www.meetup.com/vegaustin/events/315879624/?_xtd=x&from=ref'],
+    // UrlFetchApp does not normalise header case, so both spellings must work.
+    [{ 'location': 'https://www.meetup.com/vegaustin/events/1/' }, SHORT_REQ, 301,
+     'https://www.meetup.com/vegaustin/events/1/'],
+    // Repeated headers arrive as an array, the same duality as Set-Cookie. Two
+    // entries, not one: a single-element array stringifies to exactly its
+    // element, so a one-entry fixture passes even with the [0] deleted and pins
+    // nothing. Two also pins WHICH entry is taken.
+    [{ 'Location': ['https://www.meetup.com/vegaustin/events/2/', 'https://evil.test/'] }, SHORT_REQ, 302,
+     'https://www.meetup.com/vegaustin/events/2/'],
+    // Protocol-relative is legal, and classifies correctly once a scheme is on
+    // it — refusing it outright would turn a correct 'yes' into an error email.
+    [{ 'Location': '//www.meetup.com/vegaustin/events/3/' }, SHORT_REQ, 302,
+     'https://www.meetup.com/vegaustin/events/3/'],
+    // Path-relative off Meetup's own click tracker is the case where resolving
+    // rather than rejecting actually recovers a canonical event URL.
+    [{ 'Location': '/vegaustin/events/4/' }, CLICK_REQ, 302,
+     'https://www.meetup.com/vegaustin/events/4/'],
+    // Off the shortener it stays on the shortener's origin, which tockifyAvaHost_
+    // then answers 'unknown' for — a loud error rather than a silent 'no'.
+    [{ 'Location': '/e/other/' }, SHORT_REQ, 302, 'https://meetu.ps/e/other/'],
+    // 307/308 preserve the method but are still redirects.
+    [{ 'Location': 'https://www.meetup.com/vegaustin/events/5/' }, SHORT_REQ, 308,
+     'https://www.meetup.com/vegaustin/events/5/']
+  ];
+  targetCases.forEach(function (c) {
+    var got = tockifyRedirectTarget_(c[0], c[1], c[2]);
+    if (got.url !== c[3]) {
+      throw new Error('tockifyRedirectTarget_(' + JSON.stringify(c[0]) + ', HTTP ' + c[2] +
+        ') -> ' + JSON.stringify(got) + ', want ' + c[3]);
+    }
+  });
+
+  // The two failure modes must not be reported as each other: a 200 carrying a
+  // Location is not a redirect at all, while a 302 without one is a broken
+  // redirect. An HTTP 404 here is the deleted-fixture case, and saying so is
+  // what stops the next person debugging working code.
+  var targetErrors = [
+    [{ 'Location': 'https://www.meetup.com/vegaustin/events/1/' }, SHORT_REQ, 200, 'not a redirect (HTTP 200)'],
+    [{}, SHORT_REQ, 404, 'not a redirect (HTTP 404)'],
+    [{}, SHORT_REQ, 302, 'no Location header (HTTP 302)'],
+    [{ 'Location': '' }, SHORT_REQ, 302, 'no Location header (HTTP 302)'],
+    [{ 'Location': [] }, SHORT_REQ, 302, 'no Location header (HTTP 302)'],
+    [null, SHORT_REQ, 302, 'no Location header (HTTP 302)'],
+    // Anything still not absolute after resolution is refused rather than handed
+    // to tockifyAvaHost_, which would answer 'no' — the silent skip this whole
+    // feature exists to prevent.
+    [{ 'Location': 'events/6/' }, SHORT_REQ, 302, 'unresolvable Location'],
+    [{ 'Location': 'javascript:alert(1)' }, SHORT_REQ, 302, 'unresolvable Location'],
+    [{ 'Location': '/vegaustin/events/7/' }, 'not-a-url', 302, 'unresolvable Location']
+  ];
+  targetErrors.forEach(function (c) {
+    var got = tockifyRedirectTarget_(c[0], c[1], c[2]);
+    if (!got.error || got.error.indexOf(c[3]) === -1) {
+      throw new Error('tockifyRedirectTarget_(' + JSON.stringify(c[0]) + ', HTTP ' + c[2] +
+        ') -> ' + JSON.stringify(got) + ', want error containing "' + c[3] + '"');
+    }
+    // A result carrying both is how a caller checking the wrong field follows a
+    // URL the parser had already rejected.
+    if (got.url) throw new Error('an error result must carry no url: ' + JSON.stringify(got));
+  });
+
+  // tockifyAddTag_ — merges, never replaces. Re-running a job must be a no-op.
+  //
+  // Fixtures are the flat top-level array the live probe found on the
+  // authenticated eventgroup record on 2026-08-12 — group.tags = [...] — not the
+  // public ngevent API's nested content.tagset.tags.default. Built in this file
+  // on purpose: `instanceof Array` is realm-sensitive, as tests/run.js warns, so
+  // a host-realm fixture would silently take the malformed path and pass.
+  var added = tockifyAddTag_(['Potluck'], AVA_TOCKIFY_TAG);
+  if (added.join(',') !== 'Potluck,' + AVA_TOCKIFY_TAG) {
+    throw new Error('existing tags must be preserved, got ' + JSON.stringify(added));
+  }
+
+  // The VALUE, not the length: a length of 2 is equally consistent with the tag
+  // having replaced 'y', so length alone pins nothing about what came back.
+  var already = tockifyAddTag_(['x', AVA_TOCKIFY_TAG, 'y'], AVA_TOCKIFY_TAG);
+  if (already.join(',') !== 'x,' + AVA_TOCKIFY_TAG + ',y') {
+    throw new Error('an already-present tag must leave the list unchanged, got ' + JSON.stringify(already));
+  }
+
+  // Malformed or absent input must not throw, and must come back as a fresh
+  // one-element array. The `instanceof Array` check on the result is what fails
+  // by name rather than by TypeError when a string input is passed through:
+  // 'Austin-Vegan-Association'.slice() is a string that already "contains" the
+  // tag, so it survives the indexOf guard untouched.
+  [undefined, null, {}, 'nope', 123, AVA_TOCKIFY_TAG].forEach(function (input) {
+    var built = tockifyAddTag_(input, AVA_TOCKIFY_TAG);
+    if (!(built instanceof Array) || built.join(',') !== AVA_TOCKIFY_TAG) {
+      throw new Error('tockifyAddTag_(' + JSON.stringify(input) + ') -> ' + JSON.stringify(built) +
+        ', want a fresh [' + AVA_TOCKIFY_TAG + ']');
+    }
+  });
+
+  // The input must not be mutated — the caller PUTs the whole group and a
+  // surprise in-place edit is how a "verify it stuck" check passes on a write
+  // that never happened. Both branches: only the tag-absent one appends.
+  var original = ['Potluck'];
+  tockifyAddTag_(original, AVA_TOCKIFY_TAG);
+  if (original.join(',') !== 'Potluck') {
+    throw new Error('tockifyAddTag_ must not mutate its input, got ' + JSON.stringify(original));
+  }
+
+  var noop = [AVA_TOCKIFY_TAG, 'Potluck'];
+  tockifyAddTag_(noop, AVA_TOCKIFY_TAG);
+  if (noop.join(',') !== AVA_TOCKIFY_TAG + ',Potluck') {
+    throw new Error('tockifyAddTag_ must not mutate its input on the no-op branch, got ' + JSON.stringify(noop));
+  }
+
+  // The tag-PRESENT case below is the load-bearing one, and it is the only thing
+  // in this file that catches a `concat`-style implementation: that appends a
+  // copy when the tag is absent but returns the caller's own array untouched
+  // when it is present, which every check above passes. Nothing is appended on
+  // that branch, so the input reads back correct however it was returned — only
+  // pushing into the RESULT exposes the alias.
+  //
+  // The tag-ABSENT case is its symmetric twin, and is redundant on its own: for
+  // the result to alias the input there the implementation must append in place,
+  // which trips the no-mutate check above first, loudly and by name. It stays
+  // because an asymmetric pair invites a future reader to finish the cleanup by
+  // deleting the other one.
+  var srcAbsent = ['Potluck'];
+  tockifyAddTag_(srcAbsent, AVA_TOCKIFY_TAG).push('x');
+  if (srcAbsent.join(',') !== 'Potluck') {
+    throw new Error('the result must share no array with the input (tag absent), got ' + JSON.stringify(srcAbsent));
+  }
+
+  var srcPresent = [AVA_TOCKIFY_TAG];
+  tockifyAddTag_(srcPresent, AVA_TOCKIFY_TAG).push('x');
+  if (srcPresent.join(',') !== AVA_TOCKIFY_TAG) {
+    throw new Error('the result must share no array with the input (tag present), got ' + JSON.stringify(srcPresent));
+  }
+
+  // A tag that merely CONTAINS ours must not suppress the append. Matching is
+  // exact, on whole elements — 'Austin-Vegan-Association-Board' is a different
+  // tag, and a substring test here refuses to append forever, so the job's
+  // read-back never passes and the event retries until it gives up.
+  var sibling = tockifyAddTag_([AVA_TOCKIFY_TAG + '-Board'], AVA_TOCKIFY_TAG);
+  if (sibling.join(',') !== AVA_TOCKIFY_TAG + '-Board,' + AVA_TOCKIFY_TAG) {
+    throw new Error('a superstring sibling must not suppress the append, got ' + JSON.stringify(sibling));
+  }
+
+  // tockifyHasTag_ — used to verify the write stuck
+  if (!tockifyHasTag_(['x', AVA_TOCKIFY_TAG, 'y'], AVA_TOCKIFY_TAG)) {
+    throw new Error('tockifyHasTag_ should find a present tag among others');
+  }
+  // Two distinct substring traps, and each needs its own entry.
+  //   - The CONTAINER is a string (entries 6-7): a bare indexOf on it finds the
+  //     tag inside and reports a write that never landed. Guarded by
+  //     `instanceof Array`.
+  //   - An ELEMENT is a superstring (entries 8-9): matching elements loosely —
+  //     joining the array, or indexOf per element — says "tagged" about an event
+  //     carrying only a sibling tag. Guarded by Array#indexOf being an exact
+  //     ===-match on whole elements. Nothing above catches this: 'x' shares no
+  //     substring with the tag, and the string entries exercise the type guard
+  //     rather than the match semantics.
+  [undefined, null, [], ['x'], {}, AVA_TOCKIFY_TAG, 'tags=' + AVA_TOCKIFY_TAG + ';',
+   [AVA_TOCKIFY_TAG + '-Board'], ['Not-' + AVA_TOCKIFY_TAG]].forEach(function (input) {
+    if (tockifyHasTag_(input, AVA_TOCKIFY_TAG)) {
+      throw new Error('tockifyHasTag_(' + JSON.stringify(input) + ') should be false');
+    }
+  });
+
   // tockifyImageName_ — Tockify names the library entry from this
   var nameCases = [
     ['https://scontent.example.com/v/t39/758244966_1023.webp?stp=dst&oh=abc',
@@ -71,6 +289,70 @@ function test_tockifyUtil() {
     throw new Error('tockifyStartMillis_ wrong time');
   }
 
+  // tockifyErrorText_ — every case runs through this loop rather than a bare
+  // call, because a THROW from this function is its worst failure and not a
+  // harness detail: it is only ever called from inside a catch block, so a
+  // throw here escapes that catch, skips the give-up counter and wedges the
+  // queue. The loop turns that into a failure naming the input it was on,
+  // instead of an anonymous TypeError from somewhere in the file.
+  //
+  // Fixtures are built in this file on purpose, as everywhere else here: the
+  // Error below must come from the same realm the function runs in.
+  var errorTextCases = [
+    // null and undefined: String(undefined) is the truthy 'undefined', so an
+    // emptiness check never catches them, and reading .message off either would
+    // throw out of a catch block.
+    [undefined, '(undefined thrown)'],
+    [null, '(null thrown)'],
+    // A bare string throw carries no .message, so String(e) is the whole record.
+    ['boom', 'boom'],
+    // Nothing left after the fallback — the literal "says nothing" email this
+    // function exists to prevent, so it must name what was thrown instead.
+    ['', '(empty string thrown)'],
+    // .message but no .stack: a rejected-promise value, a host exception, or
+    // any of this file's own {error} objects handed to a catch by mistake.
+    [{ message: 'no stack here' }, 'no stack here'],
+    // A stack that does NOT open with the message. The de-duplication guard is
+    // not decoration: unguarded prepending is wrong on V8 and unguarded
+    // dropping loses the message entirely here, and this email is the only copy
+    // anyone gets.
+    [{ message: 'silent', stack: 'at tockifyApplyJob_ (TockifyJob.gs:1)' },
+     'silent\nat tockifyApplyJob_ (TockifyJob.gs:1)']
+  ];
+  errorTextCases.forEach(function (c) {
+    var got;
+    try {
+      got = tockifyErrorText_(c[0]);
+    } catch (e) {
+      throw new Error('tockifyErrorText_(' + JSON.stringify(c[0]) + ') threw ' + e +
+        ' — it is called only from inside a catch, so it must never throw');
+    }
+    if (got !== c[1]) {
+      throw new Error('tockifyErrorText_(' + JSON.stringify(c[0]) + ') -> ' +
+        JSON.stringify(got) + ', want ' + JSON.stringify(c[1]));
+    }
+  });
+
+  // A real Error is the common case and the only one whose stack already opens
+  // with the message. Asserted as an exact identity with e.stack rather than
+  // "contains the message": the failure guarded here is the message printed
+  // TWICE at the top of the email, and a containment check passes on that.
+  var real = new Error('kaboom');
+  var realText = tockifyErrorText_(real);
+  if (realText !== real.stack) {
+    throw new Error('a real Error must render as exactly its stack, got ' + JSON.stringify(realText));
+  }
+  // Counted, not merely checked for presence, for the same reason.
+  if (realText.split('kaboom').length - 1 !== 1) {
+    throw new Error('the message must appear once, not repeated above the stack: ' +
+      JSON.stringify(realText));
+  }
+  // And the stack itself has to survive — the whole reason e.message alone was
+  // not enough. A frame line is what separates a stack from a bare message.
+  if (realText.indexOf('\n    at ') === -1) {
+    throw new Error('the stack frames must survive, got ' + JSON.stringify(realText));
+  }
+
   Logger.log('test_tockifyUtil: ALL PASSED');
 }
 
@@ -79,6 +361,182 @@ var TOCKIFY_CALNAME = 'austin.vegan.events';
 var UPLOADCARE_PUB_KEY = 'e14168cd40d42bd3b36c';
 var TOCKIFY_GIVE_UP_MS = 2 * 60 * 60 * 1000;
 var TOCKIFY_QUEUE_KEY = 'TOCKIFY_IMAGE_QUEUE';
+var AVA_MEETUP_SLUG = 'vegaustin';
+var AVA_TOCKIFY_TAG = 'Austin-Vegan-Association';
+
+/**
+ * Whether a submitted event URL points at an event Austin Vegan Association
+ * hosts on Meetup.
+ *
+ * Three states rather than a boolean, because the answer is free for a
+ * canonical URL and costs an HTTP round trip for a shortened one. Returning
+ * 'unknown' lets the caller decide where to pay that cost — here, inside the
+ * retryable background job rather than in submitEvent.
+ *
+ * The slug is read from the /events/ PATH segment, for the reason documented on
+ * meetupExtractEventId_ (MeetupService.gs): a real entry on this calendar reads
+ *   meetup.com/vegaustin/events/313891224/?slug=vegaustin&eventId=307154188
+ * so a bare indexOf('vegaustin') also fires on another group's event that
+ * merely carries ?slug=vegaustin, tagging events AVA does not host.
+ *
+ * The event ID is what separates an event link from the group's /events/
+ * listing page: an event link always carries an ID, and a listing page names no
+ * event, so it must answer 'no' just as the bare group URL does. The first such
+ * segment decides whether or not it names an event, for the reason on the regex.
+ *
+ * So a string holding a listing-page segment is settled here even when it also
+ * mentions a shortener — once any /events/ segment matches, the shortener checks
+ * below are unreachable and the answer is 'no', not 'unknown'. That is the
+ * useful way round: 'unknown' would send a listing page to the redirect
+ * resolver, which finds no Location and reports a host it could not determine.
+ * A link that is only a shortener still answers 'unknown'.
+ *
+ * Matches the first meetup.com/<slug>/events/<id> anywhere in the string; it
+ * does not verify that segment is the URL's own authority.
+ *
+ * Deliberately NOT tied to MEETUP_GROUPS — that is the notifier's watch list
+ * and may grow to include groups AVA does not host.
+ *
+ * @param {string} url
+ * @returns {string} 'yes' | 'no' | 'unknown'
+ */
+function tockifyAvaHost_(url) {
+  if (!url) return 'no';
+  var s = String(url);
+
+  // (?:^|[\/.]) so notmeetup.com does not match; the trailing \/ after
+  // meetup\.com is what rejects meetup.com.evil.test.
+  //
+  // The FIRST meetup.com/<slug>/events/ segment decides, whether or not it
+  // names an event. Scanning past a listing page for a segment that does is
+  // how a URL in the query string gets read as this URL's own event.
+  var m = s.match(/(?:^|[\/.])meetup\.com\/([^\/\s?#]+)\/events\/(\d*)/i);
+  if (m) {
+    if (!m[2]) return 'no';   // a listing page names no event
+    return m[1].toLowerCase() === AVA_MEETUP_SLUG ? 'yes' : 'no';
+  }
+
+  // Share shortener and Meetup's own click tracker: the group is recoverable
+  // only by following the redirect.
+  if (/(?:^|[\/.])meetu\.ps\//i.test(s)) return 'unknown';
+  if (/(?:^|[\/.])meetup\.com\/ls\/click/i.test(s)) return 'unknown';
+
+  return 'no';
+}
+
+/**
+ * The absolute URL a redirect response points at.
+ *
+ * Pure header parsing, kept out of the network file for the same reason
+ * tockifySessionCookie_ is: everything interesting here is a shape that only
+ * turns up against a live third-party server, and a hand-run *_live test is the
+ * one place a regression will not be noticed.
+ *
+ * Three traps, each of which fails silently rather than loudly:
+ *   - UrlFetchApp does not normalise header case, and gives an array when a
+ *     header repeats, exactly as it does for Set-Cookie.
+ *   - A 200 carrying a stale Location is not a redirect. Following it reports a
+ *     host the server never redirected to.
+ *   - A relative Location is legal HTTP. Handed to tockifyAvaHost_ unresolved it
+ *     matches nothing and answers 'no', which is indistinguishable from a real
+ *     "not AVA" — so it must be resolved, and refused if it still cannot be.
+ *     Resolving beats refusing: a protocol-relative //www.meetup.com/... URL
+ *     classifies correctly the moment it has a scheme, and rejecting it outright
+ *     would turn a right answer into an error.
+ *
+ * @param {Object|null} headers - from HTTPResponse.getAllHeaders()
+ * @param {string} requestUrl - what was fetched, the base for a relative Location
+ * @param {number} statusCode
+ * @returns {{url: string}|{error: string}}
+ */
+function tockifyRedirectTarget_(headers, requestUrl, statusCode) {
+  if (!(statusCode >= 300 && statusCode < 400)) {
+    return { error: 'not a redirect (HTTP ' + statusCode + ')' };
+  }
+
+  var loc = headers && (headers['Location'] || headers['location']);
+  if (loc instanceof Array) loc = loc[0];
+  if (!loc) return { error: 'redirect with no Location header (HTTP ' + statusCode + ')' };
+  loc = String(loc);
+
+  if (loc.indexOf('//') === 0) {
+    // Scheme-relative. Every host in scope is https, and upgrading is the safe
+    // direction to guess wrong in.
+    loc = 'https:' + loc;
+  } else if (loc.charAt(0) === '/') {
+    var origin = String(requestUrl).match(/^(https?:\/\/[^\/?#]+)/i);
+    if (origin) loc = origin[1] + loc;
+  }
+  if (!/^https?:\/\//i.test(loc)) return { error: 'unresolvable Location: ' + loc };
+
+  return { url: loc };
+}
+
+/**
+ * The event group's tag list with `tag` present, preserving every tag already
+ * on it.
+ *
+ * Shape confirmed by live probe on 2026-08-12 (test_tockifyEventGroupShape_live)
+ * against the authenticated **eventgroup** record — the one we GET and PUT. Tags
+ * are a plain top-level array of strings:
+ *
+ *   group.tags = ["Austin-Vegan-Association"]
+ *
+ * The public `ngevent` API nests the same data as
+ * content.tagset.tags.default, and that is NOT what to write. Reading the public
+ * response and copying its shape is the trap here: this server answers a body it
+ * does not recognise with a silent 200 (see `imageSets` vs `imageIdNg` on
+ * tockifyUpdateEventGroup_), so a nested tagset would look like it saved and
+ * quietly change nothing. The probe found no `tagset` key anywhere on the
+ * eventgroup record, and no `content` wrapper at all.
+ *
+ * The `.slice()` is unconditional, so the result never shares an array with the
+ * input — not even on the branch where the tag is already there and nothing is
+ * appended. The caller PUTs the whole record and then verifies against the
+ * freshly parsed response; a result that shared the caller's array is how that
+ * check passes on a write that never happened.
+ *
+ * Matching is exact, on whole elements. A sibling tag that merely contains this
+ * one — 'Austin-Vegan-Association-Board' — must still get the tag appended; a
+ * substring test there refuses to append forever, and the caller's read-back
+ * then fails on every retry until the job gives up.
+ *
+ * @param {Array|null|undefined} tags - group.tags; absent or empty on an
+ *   untagged event (not probed — the probe sampled a tagged one; both handled)
+ * @param {string} tag
+ * @returns {Array} a new array
+ */
+function tockifyAddTag_(tags, tag) {
+  var list = (tags instanceof Array) ? tags.slice() : [];
+  if (list.indexOf(tag) === -1) list.push(tag);
+  return list;
+}
+
+/**
+ * Whether an event group's tag list carries a tag. Used to verify a write stuck
+ * — this API answers a rejected field with HTTP 200, so a status code proves
+ * nothing and this check is the only thing between a silent failure and a
+ * correct report.
+ *
+ * Two guards, against two different substring traps:
+ *   - `instanceof Array` is load-bearing, not a type-safety nicety: given a
+ *     string `tags` that merely contains the tag as a substring, a bare indexOf
+ *     returns a non-negative index and reports a write that never landed as a
+ *     success. That is exactly the value a server rejecting the array shape
+ *     could hand back.
+ *   - Array#indexOf matches whole elements with ===, which is equally
+ *     load-bearing. Comparing loosely instead — joining the array, or running
+ *     indexOf on each element — reports "tagged" for an event carrying only
+ *     'Austin-Vegan-Association-Board', a different tag that happens to contain
+ *     this one.
+ *
+ * @param {Array|null|undefined} tags - group.tags
+ * @param {string} tag
+ * @returns {boolean}
+ */
+function tockifyHasTag_(tags, tag) {
+  return (tags instanceof Array) && tags.indexOf(tag) !== -1;
+}
 
 /**
  * Filename Tockify should use for the image library entry, taken from the
@@ -176,4 +634,43 @@ function tockifyStartMillis_(occurrence) {
     parseInt(d[0], 10), parseInt(d[1], 10) - 1, parseInt(d[2], 10),
     parseInt(t[0], 10), parseInt(t[1], 10), 0, 0
   ).getTime();
+}
+
+/**
+ * Readable text for a caught throw.
+ *
+ * e.message alone discards e.stack, and the email is the only forensic record
+ * an unattended trigger leaves behind — the execution log is gone in days and
+ * nobody is watching it live. A non-Error throw (a bare string, a host object)
+ * has no .message at all, and rendering it produced "unhandled exception:
+ * undefined", an email that says nothing at the moment it matters most.
+ *
+ * Lives here, not beside the catch blocks that use it: it touches no Apps Script
+ * global, only String and typeof, so it is a pure helper by this plan's own
+ * "where code goes" rule — and being here is what makes it testable without a
+ * network, which the function written to keep a failure email informative most
+ * needs. Apps Script shares one global scope across files, so Code.gs,
+ * TockifyJob.gs and TockifyService.gs all reach it from here.
+ *
+ * @param {*} e - whatever was thrown; not necessarily an Error
+ * @returns {string}
+ */
+function tockifyErrorText_(e) {
+  // null and undefined first: String(undefined) is the truthy "undefined", so
+  // an emptiness check never catches them and the email says nothing at the
+  // moment it matters most — the case this function exists for. Reading
+  // .message off either one would also throw, out of a catch block, which is
+  // the one place a throw must not happen.
+  if (e === null || e === undefined) return '(' + String(e) + ' thrown)';
+
+  var msg = e.message ? String(e.message) : String(e);
+  if (!msg) msg = '(empty ' + (typeof e) + ' thrown)';
+
+  var stack = e.stack ? String(e.stack) : '';
+  if (!stack) return msg;
+
+  // A V8 stack already opens with "Error: <message>", so prepending prints the
+  // message twice. Guarded rather than assumed: a runtime whose stack omits it
+  // still needs it, and this email is the only copy anyone gets.
+  return stack.indexOf(msg) === -1 ? msg + '\n' + stack : stack;
 }

@@ -1,14 +1,48 @@
 /**
- * Drains the Tockify image queue. Installed as a 5-minute time-driven trigger.
- * Jobs whose event has not appeared in Tockify within TOCKIFY_GIVE_UP_MS are
- * dropped with an email. Tockify syncs from Google within seconds, so that
- * window is pure safety margin.
+ * Drains the Tockify update queue — image, tag, or both. Installed as a
+ * 5-minute time-driven trigger.
+ *
+ * A job leaves the queue three ways: it succeeds, it comes back {error}, or its
+ * event never appeared within TOCKIFY_GIVE_UP_MS. The last two are emailed and
+ * dropped. Only "not synced yet" is retried — Tockify syncs from Google within
+ * seconds, so that window is pure safety margin.
+ *
+ * Dropping on {error} is not a policy invented for exceptions: every {error}
+ * result has always been emailed and dequeued here. The per-job try/catch below
+ * converts a thrown failure into an {error} so it follows the policy that
+ * already exists rather than escaping it. What that costs is real and worth
+ * naming: a transient Tockify 500 on the PUT drops the job with no retry, and
+ * redoing it means re-submitting the event.
+ *
+ * The catch is needed because tockifyQueueSave_ runs AFTER the loop, so a throw
+ * that escapes never rewrites the queue: the whole batch stays pending —
+ * including jobs that already succeeded this run, which then re-upload to
+ * Uploadcare and re-register an image set on the next tick — while job.tries
+ * never increments, tockifyShouldGiveUp_ is never consulted, and no email goes
+ * out. UrlFetchApp.fetch throws on DNS/TLS/timeout (muteHttpExceptions
+ * suppresses error STATUSES only) and tockifyUploadImage_ parses JSON unguarded
+ * in its poll loop, so this is reachable. It wraps the per-job call rather than
+ * tockifyQueueSave_ deliberately: a bare finally around the save would drop the
+ * throwing job with no email at all, which is worse.
  */
 function processTockifyQueue_() {
   var jobs = tockifyQueueLoad_();
   if (!jobs.length) return;
 
-  var login = tockifySession_();
+  // tockifyLogin_ and the session probe both call UrlFetchApp.fetch bare, so a
+  // DNS/TLS/timeout failure throws rather than returning {error}. That aborts
+  // before the loop, which is harmless for the queue — nothing has been
+  // dequeued and tockifyQueueSave_ was never going to run — but it would be the
+  // one path in this file that fails an unattended trigger silently. Failures
+  // here are loud by design, so mirror the login.error branch. Safe to notify
+  // from here because tockifyNotify_ swallows its own send failures.
+  var login;
+  try {
+    login = tockifySession_();
+  } catch (e) {
+    tockifyNotify_('Tockify login failed', 'unhandled exception: ' + tockifyErrorText_(e));
+    return; // leave the queue intact; next run tries again
+  }
   if (login.error) {
     tockifyNotify_('Tockify login failed', login.error);
     return; // leave the queue intact; next run tries again
@@ -19,7 +53,18 @@ function processTockifyQueue_() {
 
   for (var i = 0; i < jobs.length; i++) {
     var job = jobs[i];
-    var result = tockifyApplyImage_(login.cookie, job);
+
+    // Routed into the same path as an {error} result — see the note above.
+    // "aborted:" is not decoration: this error is built out here, outside the
+    // problem list tockifyApplyJob_ collects, so without the prefix the email
+    // carries no stage lines and reads under that function's documented rule as
+    // "every stage worked" when the job in fact stopped mid-flight.
+    var result;
+    try {
+      result = tockifyApplyJob_(login.cookie, job);
+    } catch (e) {
+      result = { error: 'aborted: unhandled exception: ' + tockifyErrorText_(e) };
+    }
 
     if (result.success) continue; // done — drop from the queue
 
@@ -30,9 +75,13 @@ function processTockifyQueue_() {
     }
 
     tockifyNotify_(
-      'Tockify image not set: ' + job.title,
+      'Tockify update failed: ' + job.title,
       (result.error || 'event never appeared in Tockify') +
-      '\n\nImage: ' + job.imageUrl +
+      // "Image URL:", not "Image:" — the problem list above can carry an
+      // "image:" line, and two meanings one shift-key apart in a body someone
+      // skims at 7am is how the wrong one gets read.
+      (job.imageUrl ? '\n\nImage URL: ' + job.imageUrl : '') +
+      '\nEvent link: ' + (job.sourceUrl || '(none)') +
       '\nTries: ' + job.tries
     );
   }
@@ -41,28 +90,124 @@ function processTockifyQueue_() {
 }
 
 /**
- * Runs one job end to end.
+ * Runs one job end to end: image, tag, or both.
+ *
+ * Collects problems rather than returning at the first one, because the user's
+ * decision was to do the work that can be done and report what could not. That
+ * cuts both ways: a dead shortener must not cost a good image its write, and a
+ * failed upload must not cost an AVA event its tag. Every stage that can still
+ * run, runs, and the caller gets one email naming all of them.
+ *
+ * The rule the email leans on, in both halves, because half of it is a lie:
+ *   - an `image:`, `host group:` or `write:` line means that stage failed, and
+ *     a stage with no line ran and worked. That is why nothing separately
+ *     reports what was applied — absence is the success signal.
+ *   - a `find:` or `aborted:` line means the job stopped there, so no stage
+ *     after it ran at all and none of them may be assumed either way.
+ *
+ * `image:` covers both failure modes of that stage, returned and thrown, so
+ * `aborted:` now means something OUTSIDE the image stage truncated the job.
+ * The image block owns its own catch because the two modes must cost the same:
+ * do the work that can be done is not conditional on how the work that could
+ * not be done reported itself.
+ *
+ * The prefixes on the two early exits are what make that vocabulary total. Both
+ * of them leave before `problems` is ever collected — a failed lookup here, and
+ * a throw caught by the caller — so unprefixed they produce an email carrying
+ * no stage lines, which under the first half alone reads as "every stage
+ * worked" when in fact none of them ran. The throw path is the sharper of the
+ * two: tockifyUploadImage_ parses JSON unguarded in its poll loop, so it is the
+ * likeliest way this file fails in anger, and it silently drops a due tag.
+ *
+ * There is deliberately no warning/error split any more. It never carried
+ * behaviour — a warning and an error both emailed and both dequeued — so the
+ * only thing it ever chose was the wording of an email. Once two stages can
+ * fail independently, one binary cannot describe the outcome (image on and tag
+ * unknown; image off and tag on; both off), and the list already does. The
+ * remedy that justified the split now travels with the problem needing it.
+ *
  * @param {string} cookie
  * @param {Object} job
  * @returns {{success: true}|{notFound: true}|{error: string}}
  */
-function tockifyApplyImage_(cookie, job) {
+function tockifyApplyJob_(cookie, job) {
   var found = tockifyFindEvent_(cookie, job.title, job.startMillis);
   if (found.notFound) return { notFound: true };
-  if (found.error) return { error: found.error };
+  if (found.error) return { error: 'find: ' + found.error };
 
-  var up = tockifyUploadImage_(job.imageUrl);
-  if (up.error) return { error: up.error };
+  var problems = [];
+  var changes = {};
 
-  var reg = tockifyRegisterImage_(cookie, up.uuid, tockifyImageName_(job.imageUrl));
-  if (reg.error) return { error: reg.error };
+  if (job.imageUrl) {
+    try {
+      var up = tockifyUploadImage_(job.imageUrl);
+      if (up.error) {
+        problems.push('image: ' + up.error);
+      } else {
+        var reg = tockifyRegisterImage_(cookie, up.uuid, tockifyImageName_(job.imageUrl));
+        if (reg.error) problems.push('image: ' + reg.error);
+        else changes.imageSetId = reg.imageSetId;
+      }
+    } catch (e) {
+      // A thrown image failure must cost no more than a returned one. Without
+      // this the two modes diverge on the same stage: an upload that returns
+      // {error} leaves the tag applicable and still writes it, while an upload
+      // that throws unwinds to the caller's net and loses the tag on a job that
+      // then dequeues. tockifyUploadImage_ parses its poll response unguarded,
+      // so a throw here is the likeliest real failure in this job.
+      problems.push('image: ' + tockifyErrorText_(e));
+    }
+  }
 
-  return tockifySetEventImage_(cookie, found.uid, reg.imageSetId);
+  // Resolved here, not at submit time: this is the retryable context, and the
+  // event has already been found, so the lookup happens once rather than on
+  // every 5-minute poll while Tockify catches up.
+  var ava = tockifyIsAvaEvent_(job.sourceUrl);
+  if (ava.error) {
+    // The remedy rides with the problem, so it reaches whatever prints it
+    // without the caller having to know which problem it belongs to.
+    problems.push('host group: ' + ava.error +
+      ' — if this event is hosted by Austin Vegan Association, add the ' +
+      AVA_TOCKIFY_TAG + ' tag by hand');
+  } else if (ava.isAva) {
+    changes.addTag = AVA_TOCKIFY_TAG;
+  }
+
+  // Skip the write when there is nothing to write: tockifyUpdateEventGroup_
+  // documents that it applies the fields it is handed, and an empty change set
+  // would spend a GET and a PUT to say nothing.
+  if (changes.imageSetId || changes.addTag) {
+    var upd = tockifyUpdateEventGroup_(cookie, found.uid, changes);
+    if (upd.error) problems.push('write: ' + upd.error);
+  }
+
+  // Newline-joined, not '; ' — this string is the body of an email a human
+  // skims, and two failures run together on one line is how the second is
+  // missed.
+  if (problems.length) return { error: problems.join('\n') };
+  return { success: true };
 }
 
 /**
  * Emails the script owner. Failures here are loud on purpose — these endpoints
  * are undocumented and can change without notice.
+ *
+ * Sending is guarded because this is called from inside the queue loop, and
+ * MailApp.sendEmail throws once the daily quota is exhausted. That throw would
+ * escape the per-job try/catch — which wraps only tockifyApplyJob_ — and abort
+ * the run before tockifyQueueSave_, wedging the queue in exactly the way that
+ * catch exists to prevent: completed jobs re-uploading every five minutes with
+ * no give-up.
+ *
+ * What the guard costs is more than one lost notice, and underselling it here
+ * would be its own kind of silence. The quota is DAILY: once it is gone, every
+ * failure until midnight is emailed nowhere, and each of those jobs is dequeued
+ * and gone — the notice was the only record they existed, and all that survives
+ * is a Logger line in the execution log. That is still the better trade, and
+ * gating on getRemainingDailyQuota() is deliberately NOT done: it would block
+ * all image and tag application for the rest of the day to protect the notices
+ * of a job that only emails when something has already gone wrong.
+ *
  * @param {string} subject
  * @param {string} body
  */
@@ -74,7 +219,15 @@ function tockifyNotify_(subject, body) {
     Logger.log('Tockify notify failed, no recipient: ' + subject + ' — ' + body);
     return;
   }
-  MailApp.sendEmail(to, '[Event Automation] ' + subject, body);
+  try {
+    MailApp.sendEmail(to, '[Event Automation] ' + subject, body);
+  } catch (e) {
+    // The Logger line is the ONLY record of this failure — the email that would
+    // have carried it is the thing that just failed — so it gets the same
+    // treatment the email gets: a non-Error throw has no .message, and
+    // "Tockify notify failed (undefined)" loses the quota diagnosis entirely.
+    Logger.log('Tockify notify failed (' + tockifyErrorText_(e) + '): ' + subject + ' — ' + body);
+  }
 }
 
 /**
