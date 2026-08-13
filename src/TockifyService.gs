@@ -12,6 +12,54 @@ function test_tockifyUploadImage_live() {
   Logger.log('test_tockifyUploadImage_live: PASSED — uuid ' + r.uuid);
 }
 
+/**
+ * End-to-end: queues a tag-only job for an event already in Tockify and drains
+ * the queue once, then reports whether the tag landed.
+ *
+ * PRECONDITION — remove the Austin-Vegan-Association tag from this event in the
+ * Tockify UI first. With the tag already present tockifyAddTag_ returns the list
+ * unchanged, the PUT is a no-op, and the verification passes on a tag that
+ * predates this run. That would prove nothing about the one thing no offline
+ * test can establish: that `tags` is writable at all. This function refuses to
+ * run rather than let that happen.
+ *
+ * Also logs `version` before and after. If it increments, the server really did
+ * mutate the record — a signal worth having for any future field.
+ *
+ * Fixture is uid 135, "August Afternoon Yoga", 2026-08-30 12:30 America/Chicago.
+ * Delete this function once the branch is verified.
+ */
+function test_tockifyAvaTagEndToEnd_live() {
+  var TITLE = '🧘 August Afternoon Yoga 🧘';
+  var START = 1788111000000;
+  var SOURCE = 'https://www.meetup.com/vegaustin/events/315879894/';
+  var UID = '135';
+
+  var login = tockifySession_();
+  if (login.error) throw new Error(login.error);
+
+  var path = '/api/eventgroup/' + TOCKIFY_CALID + '/' + UID;
+  var before = JSON.parse(tockifyFetch_(path, login.cookie).getContentText());
+  Logger.log('BEFORE: tags=' + JSON.stringify(before.tags) + ' version=' + before.version);
+
+  if (tockifyHasTag_(before.tags, AVA_TOCKIFY_TAG)) {
+    throw new Error('PRECONDITION FAILED: the event still carries ' + AVA_TOCKIFY_TAG +
+      '. Remove it in the Tockify UI first, or this run cannot fail and proves nothing.');
+  }
+
+  tockifyQueueAdd_(TITLE, START, '', SOURCE);
+  processTockifyQueue_();
+
+  var after = JSON.parse(tockifyFetch_(path, login.cookie).getContentText());
+  Logger.log('AFTER : tags=' + JSON.stringify(after.tags) + ' version=' + after.version);
+  Logger.log('queue remaining: ' + JSON.stringify(tockifyQueueLoad_()));
+
+  if (!tockifyHasTag_(after.tags, AVA_TOCKIFY_TAG)) {
+    throw new Error('tag did not land — tags came back ' + JSON.stringify(after.tags));
+  }
+  Logger.log('test_tockifyAvaTagEndToEnd_live: PASSED — tag written to a live record');
+}
+
 function test_tockifyIsAvaEvent_live() {
   // Verified 2026-08-12: this short link 302s to
   // www.meetup.com/vegaustin/events/315879624/
