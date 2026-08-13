@@ -1,12 +1,16 @@
 # Tockify Austin Vegan Association Tag — Design
 
 **Date:** 2026-08-12
-**Status:** Partly implemented. The pure helpers are in `src/TockifyUtil.gs` and
-the redirect resolver and host classifier are in `src/TockifyService.gs` (plan
-Tasks 1, 2 and 4); the single-write `tockifyUpdateEventGroup_` and the job
-rewiring (Tasks 5–7) are not written yet. The tag shape and the short-link
-redirect were verified against live services on 2026-08-12, including the
-authenticated eventgroup record — see [The tag's shape](#the-tags-shape).
+**Status:** Implemented on branch `tockify-ava-tag` — every implementation task
+in the plan (1–9) is written, shipped and verified; only Task 10's merge and
+deploy are outstanding. The pure helpers are in `src/TockifyUtil.gs`; the host
+classifier, the redirect resolver and the single-write `tockifyUpdateEventGroup_`
+are in `src/TockifyService.gs`; the job is rewired to `tockifyApplyJob_` in
+`src/TockifyJob.gs`, and `src/Code.gs` carries the source URL into the widened
+enqueue gate. The tag shape and the short-link redirect were verified against
+live services on 2026-08-12, including the authenticated eventgroup record — see
+[The tag's shape](#the-tags-shape) — and the tag write itself end to end on
+2026-08-13 (see [Open items](#open-items)). Not yet merged or deployed.
 
 ---
 
@@ -121,7 +125,7 @@ copy, and it is **not what to write**. It is the same split already known for th
 image, where the public response carries `content.imageSets` while the eventgroup
 record takes `imageIdNg` at the top level. Sending a nested `tagset` costs
 nothing visible: this server answers a body field it does not recognise with a
-silent HTTP 200 (see `imageSets` vs `imageIdNg` in `tockifySetEventImage_`), so
+silent HTTP 200 (see `imageSets` vs `imageIdNg` in `tockifyUpdateEventGroup_`), so
 the write would look accepted and change nothing.
 
 Tags merge rather than replace: existing tags are preserved and
@@ -209,7 +213,11 @@ Pure helpers get cases in `test_tockifyUtil`, following the existing pattern in
 Live tests, editor-run, matching `test_tockifyLogin_live`:
 
 - `test_tockifyEventGroupShape_live` — the shape probe, run 2026-08-12
-- an end-to-end tag apply against a scratch event
+- `test_tockifyIsAvaEvent_live` — short link resolved over the network, run
+  2026-08-12
+- `test_tockifyAvaTagEndToEnd_live` — an end-to-end tag apply, run 2026-08-13.
+  It drains the whole live queue and needs the fixture event's tag cleared by
+  hand first; both are stated on the function and in `README.md`
 
 ---
 

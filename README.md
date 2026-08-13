@@ -183,6 +183,9 @@ a prefix, and the prefixes come in two kinds that must not be read alike:
   returned an error or threw. A stage with no line ran and worked — absence is
   the success signal, which is why nothing separately reports what was applied —
   so a lone `host group:` line means the flyer landed and only the tag did not.
+  The same rule holds inside the `write:` stage, which sets the image and the tag
+  in one request: it names each field that failed to stick, one per line, so an
+  unnamed field in that write landed.
 - `find:` and `aborted:` mean the job stopped there: the Tockify event lookup
   failed, or an exception outside the image stage cut the run short. Stages
   missing after one of these never ran, so nothing can be assumed about them
@@ -343,10 +346,22 @@ Available test functions:
 | `test_processEventUrl_badUrl` | Code.gs | Error handling for unreachable URLs |
 | `test_tockifyLogin_live` | TockifyService.gs | Logging in returns a `TKFSession` cookie |
 | `test_tockifyUploadImage_live` | TockifyService.gs | An image URL uploads and comes back with a uuid |
+| `test_tockifyAvaTagEndToEnd_live` | TockifyService.gs | The AVA tag reaches a real event record. **Drains the whole live queue, and needs a tag cleared by hand first — see below** |
 | `test_tockifyIsAvaEvent_live` | TockifyService.gs | Host-group classification, including a real short link resolved over the network |
 | `test_tockifyEventGroupShape_live` | TockifyService.gs | Read-only probe reporting where tags live on an authenticated event group |
 
 The CalendarService `*_live` tests create `[TEST]` events and delete them in a
 `finally` block.
+
+`test_tockifyAvaTagEndToEnd_live` is the one to read before you run it. It calls
+`processTockifyQueue_()`, so it drains the **entire** live queue, not just the job
+it added: every other pending job is applied or dropped and emailed in the same
+pass. And it has a manual precondition — open the fixture event in the Tockify UI
+and remove its `Austin-Vegan-Association` tag first. With the tag already there
+the merge is a no-op, the PUT changes nothing, and the check passes on a tag that
+predates the run, proving nothing about whether the field is writable. The test
+refuses to run rather than pass that way, so `PRECONDITION FAILED` in the log
+means exactly that. Its fixture event is already tagged again, so re-point the
+four constants at another AVA event before re-running.
 
 To test a live extraction, edit `test_extractEventData_live` in Extraction.gs, replace the URL with a real event URL, push with `clasp push`, then run it from the editor and inspect the execution log output.

@@ -423,6 +423,11 @@ function tockifyRegisterImage_(cookie, uuid, name) {
  * carry the tag — on an already-tagged event the read-back passes on a tag that
  * predates us and proves nothing.
  *
+ * Both read-backs always run, and the error names every field that failed, one
+ * per line — the same collect-then-report shape as tockifyApplyJob_. Returning
+ * at the first was a silent claim about the second: under the rule those callers
+ * document, a field with no line landed.
+ *
  * Callers must not pass an empty `changes`: there is deliberately no early
  * return, so it issues a full no-op rewrite of the record. Whether there is work
  * to do belongs to the caller that assembled `changes` — see tockifyApplyJob_ —
@@ -497,24 +502,49 @@ function tockifyUpdateEventGroup_(cookie, uid, changes) {
       putRes.getContentText().substring(0, 120) };
   }
 
-  if (changes.imageSetId && (!saved.imageSets || !saved.imageSets.length)) {
-    return { error: 'image did not stick — imageSets came back empty' };
+  // Both read-backs are decided before either is reported, and neither returns
+  // early. Returning at the first left the other field unexamined while the rule
+  // this function's callers document — a stage with no line ran and worked —
+  // says it landed, and the asymmetry was the tell: the tag branch already named
+  // the image's fate, the image branch never named the tag's.
+  var imageProblem = '';
+  if (changes.imageSetId) {
+    if (!saved.imageSets || !saved.imageSets.length) {
+      imageProblem = 'image did not stick — imageSets came back empty';
+    } else if (saved.imageIdNg && saved.imageIdNg !== changes.imageSetId) {
+      // Counting imageSets is not enough on an event that already had an image:
+      // the old one keeps that array populated while our id is quietly dropped.
+      // The `saved.imageIdNg &&` guard leaves an absent field on the old
+      // behaviour, so this cannot invent a failure before the field is confirmed
+      // on a live run. One image line either way — the two checks are two ways
+      // of catching one failed field, not two failures.
+      imageProblem = 'image did not stick — imageIdNg came back "' + saved.imageIdNg + '"';
+    }
   }
-  // Counting imageSets is not enough on an event that already had an image: the
-  // old one keeps that array populated while our id is quietly dropped. The
-  // `saved.imageIdNg &&` guard leaves an absent field on the old behaviour, so
-  // this cannot invent a failure before the field is confirmed on a live run.
-  if (changes.imageSetId && saved.imageIdNg && saved.imageIdNg !== changes.imageSetId) {
-    return { error: 'image did not stick — imageIdNg came back "' + saved.imageIdNg + '"' };
-  }
+
+  var tagProblem = '';
   if (changes.addTag && !tockifyHasTag_(saved.tags, changes.addTag)) {
-    // Naming the image explicitly: the two share one PUT, so a tag failure
-    // reported bare reads as "nothing landed" and invites a rerun that
-    // re-uploads and re-registers a second image set for the same event.
-    return { error: 'tag did not stick — "' + changes.addTag +
-      '" absent from the saved tags (any image in the same write did land)' };
+    tagProblem = 'tag did not stick — "' + changes.addTag + '" absent from the saved tags';
   }
-  return { success: true };
+
+  if (!imageProblem && !tagProblem) return { success: true };
+
+  // Each line names what the OTHER field did, and only when the other field was
+  // actually checked and passed. They share one PUT, so a failure reported bare
+  // reads as "nothing landed" and invites a rerun — which re-uploads and
+  // re-registers a second image set for the same event. With both lines present
+  // nothing needs claiming, and the parenthetical would be a lie.
+  var problems = [];
+  if (imageProblem) {
+    problems.push(imageProblem + (tagProblem ? '' : ' (any tag in the same write did land)'));
+  }
+  if (tagProblem) {
+    problems.push(tagProblem + (imageProblem ? '' : ' (any image in the same write did land)'));
+  }
+  // Newline-joined, matching tockifyApplyJob_: this reaches a human as email
+  // body, and two failures run together on one line is how the second is missed.
+  // Both lines belong to the single `write:` stage the caller prefixes.
+  return { error: problems.join('\n') };
 }
 
 /**
@@ -543,7 +573,13 @@ function tockifyResolveRedirect_(url) {
     // muteHttpExceptions suppresses error STATUSES; DNS, TLS and timeout still
     // throw. This dials a third-party shortener named in a human-pasted URL, and
     // an escaped throw skips the give-up counter and wedges the queue.
-    return { error: 'fetch failed for ' + url + ': ' + e.message };
+    //
+    // tockifyErrorText_ rather than e.message: this string is carried up as the
+    // `host group:` line of the failure email, and a non-Error throw has no
+    // .message, so bare it renders "fetch failed for <url>: undefined" — the
+    // uninformative email that helper exists to prevent, on the one line that
+    // tells the reader which event to tag by hand.
+    return { error: 'fetch failed for ' + url + ': ' + tockifyErrorText_(e) };
   }
 
   return tockifyRedirectTarget_(res.getAllHeaders(), url, res.getResponseCode());

@@ -449,7 +449,7 @@ git commit -m "test: probe where tagset lives on a Tockify event group"
 
 ---
 
-## Task 4: Resolve shortened Meetup links — **DONE** (live test not yet run — Task 9)
+## Task 4: Resolve shortened Meetup links — **DONE** (live test run 2026-08-12 in Task 9)
 
 **Files:**
 - Modify: `src/TockifyUtil.gs` (new `tockifyRedirectTarget_`; cases in `test_tockifyUtil`)
@@ -637,7 +637,14 @@ The live test runs in Task 9 alongside the end-to-end check — batching them sa
 
 ---
 
-## Task 5: One GET/PUT for image and tag — not started
+## Task 5: One GET/PUT for image and tag — **DONE**
+
+**Shipped, and the code block below is no longer what is in the file.**
+`tockifyUpdateEventGroup_` (`src/TockifyService.gs`) went in at `2d8d01c` and has
+been reworked twice since: `dec2a6b` verifies the image by value (`imageIdNg`, not
+just a non-empty `imageSets`) and refuses a `tags` list it cannot parse rather
+than overwriting it, and the read-back now reports the image and the tag together
+instead of returning at the first failure. Read the function, not this snippet.
 
 **Task 3's answer is applied below.** The probe (2026-08-12) found tags in a flat top-level array of strings, `group.tags`. There is no `tagset` key on this record — do not reintroduce `group.tagset` or `group.content.tagset` from the public API's shape.
 
@@ -711,7 +718,15 @@ git commit -m "feat: apply image and tag to a Tockify event group in one write"
 
 ---
 
-## Task 6: Rewire the job
+## Task 6: Rewire the job — **DONE**
+
+**Shipped at `6a768c1`, and the design in the code block below was superseded.**
+The warning/error split it describes is gone (`b6070a2`): `tockifyApplyJob_`
+collects every problem the job hits and returns them as one newline-joined
+`error`, because once two stages can fail independently a single warning/error
+binary cannot describe the outcome. The `aborted:` and `find:` prefixes
+(`b11f243`) and the image stage's own catch (`27b124a`) came later still. Read
+`src/TockifyJob.gs`, not this snippet.
 
 **Files:**
 - Modify: `src/TockifyJob.gs:7-61`
@@ -822,7 +837,12 @@ git commit -m "feat: apply the AVA tag alongside the image in the Tockify job"
 
 ---
 
-## Task 7: Carry the source URL and widen the enqueue gate
+## Task 7: Carry the source URL and widen the enqueue gate — **DONE**
+
+Shipped at `d6120a6`. One later change: the enqueue is wrapped in a try/catch
+(`1797c7d`), so overflowing the 9KB script-property cap degrades to a warning on
+the confirmation page instead of throwing after the calendar event, the Drive
+file and the attachment are already committed.
 
 **Files:**
 - Modify: `src/TockifyQueue.gs:20-37`
@@ -901,7 +921,11 @@ git commit -m "feat: queue a Tockify job for AVA events without an image"
 
 ---
 
-## Task 8: Documentation
+## Task 8: Documentation — **DONE**
+
+Shipped at `598016d`. Both README edits landed; the live-test table gained
+`test_tockifyAvaTagEndToEnd_live` afterwards, once Task 9 kept that function
+rather than deleting it.
 
 **Files:**
 - Modify: `README.md:96-127` (the `## Tockify` section)
@@ -958,7 +982,25 @@ git commit -m "docs: document the Austin Vegan Association tag"
 
 ---
 
-## Task 9: End-to-end live verification — STOP, USER-RUN
+## Task 9: End-to-end live verification — STOP, USER-RUN — **DONE 2026-08-13**
+
+**Run. What it established, and where it landed differently from the plan
+below:**
+
+1. The tag write is proven: `tags` went `[]` → `["Austin-Vegan-Association"]` on
+   "August Afternoon Yoga" (uid 135), a Google-synced external event.
+   `test_tockifyIsAvaEvent_live` (Step 3 item 1) passed on 2026-08-12.
+2. The scratch test was **kept, not deleted**, and lives in
+   `src/TockifyService.gs` as `test_tockifyAvaTagEndToEnd_live` (`9a61618`)
+   beside the other `*_live` functions. It also enforces the precondition in code
+   — it refuses to run if the fixture event still carries the tag — rather than
+   leaving it to the reader.
+3. `version` did **not** increment. Step 2 expected the PUT value to be higher;
+   it was `1` before and `1` after a write that demonstrably changed the record,
+   so it is not a mutation signal. Recorded as rejected in the design doc.
+
+Step 4's regression check — submitting a non-AVA event with an image through the
+web app — has no record either way in this branch. Treat it as unconfirmed.
 
 **Files:**
 - Modify: `src/TockifyJob.gs` (temporary scratch test, removed in Step 5)
@@ -1032,7 +1074,11 @@ git commit -m "test: verify the AVA tag end to end"
 
 ---
 
-## Task 10: Finish the branch
+## Task 10: Finish the branch — **IN PROGRESS**
+
+Steps 1 and 2 are done and have been repeated after every fix; the branch has
+been through two rounds of per-task review and one final cross-cutting pass.
+Step 3 — deploy and integrate — is the only thing left, and waits on the user.
 
 **Step 1: Full test run**
 

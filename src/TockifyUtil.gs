@@ -289,6 +289,70 @@ function test_tockifyUtil() {
     throw new Error('tockifyStartMillis_ wrong time');
   }
 
+  // tockifyErrorText_ — every case runs through this loop rather than a bare
+  // call, because a THROW from this function is its worst failure and not a
+  // harness detail: it is only ever called from inside a catch block, so a
+  // throw here escapes that catch, skips the give-up counter and wedges the
+  // queue. The loop turns that into a failure naming the input it was on,
+  // instead of an anonymous TypeError from somewhere in the file.
+  //
+  // Fixtures are built in this file on purpose, as everywhere else here: the
+  // Error below must come from the same realm the function runs in.
+  var errorTextCases = [
+    // null and undefined: String(undefined) is the truthy 'undefined', so an
+    // emptiness check never catches them, and reading .message off either would
+    // throw out of a catch block.
+    [undefined, '(undefined thrown)'],
+    [null, '(null thrown)'],
+    // A bare string throw carries no .message, so String(e) is the whole record.
+    ['boom', 'boom'],
+    // Nothing left after the fallback — the literal "says nothing" email this
+    // function exists to prevent, so it must name what was thrown instead.
+    ['', '(empty string thrown)'],
+    // .message but no .stack: a rejected-promise value, a host exception, or
+    // any of this file's own {error} objects handed to a catch by mistake.
+    [{ message: 'no stack here' }, 'no stack here'],
+    // A stack that does NOT open with the message. The de-duplication guard is
+    // not decoration: unguarded prepending is wrong on V8 and unguarded
+    // dropping loses the message entirely here, and this email is the only copy
+    // anyone gets.
+    [{ message: 'silent', stack: 'at tockifyApplyJob_ (TockifyJob.gs:1)' },
+     'silent\nat tockifyApplyJob_ (TockifyJob.gs:1)']
+  ];
+  errorTextCases.forEach(function (c) {
+    var got;
+    try {
+      got = tockifyErrorText_(c[0]);
+    } catch (e) {
+      throw new Error('tockifyErrorText_(' + JSON.stringify(c[0]) + ') threw ' + e +
+        ' — it is called only from inside a catch, so it must never throw');
+    }
+    if (got !== c[1]) {
+      throw new Error('tockifyErrorText_(' + JSON.stringify(c[0]) + ') -> ' +
+        JSON.stringify(got) + ', want ' + JSON.stringify(c[1]));
+    }
+  });
+
+  // A real Error is the common case and the only one whose stack already opens
+  // with the message. Asserted as an exact identity with e.stack rather than
+  // "contains the message": the failure guarded here is the message printed
+  // TWICE at the top of the email, and a containment check passes on that.
+  var real = new Error('kaboom');
+  var realText = tockifyErrorText_(real);
+  if (realText !== real.stack) {
+    throw new Error('a real Error must render as exactly its stack, got ' + JSON.stringify(realText));
+  }
+  // Counted, not merely checked for presence, for the same reason.
+  if (realText.split('kaboom').length - 1 !== 1) {
+    throw new Error('the message must appear once, not repeated above the stack: ' +
+      JSON.stringify(realText));
+  }
+  // And the stack itself has to survive — the whole reason e.message alone was
+  // not enough. A frame line is what separates a stack from a bare message.
+  if (realText.indexOf('\n    at ') === -1) {
+    throw new Error('the stack frames must survive, got ' + JSON.stringify(realText));
+  }
+
   Logger.log('test_tockifyUtil: ALL PASSED');
 }
 
@@ -570,4 +634,43 @@ function tockifyStartMillis_(occurrence) {
     parseInt(d[0], 10), parseInt(d[1], 10) - 1, parseInt(d[2], 10),
     parseInt(t[0], 10), parseInt(t[1], 10), 0, 0
   ).getTime();
+}
+
+/**
+ * Readable text for a caught throw.
+ *
+ * e.message alone discards e.stack, and the email is the only forensic record
+ * an unattended trigger leaves behind — the execution log is gone in days and
+ * nobody is watching it live. A non-Error throw (a bare string, a host object)
+ * has no .message at all, and rendering it produced "unhandled exception:
+ * undefined", an email that says nothing at the moment it matters most.
+ *
+ * Lives here, not beside the catch blocks that use it: it touches no Apps Script
+ * global, only String and typeof, so it is a pure helper by this plan's own
+ * "where code goes" rule — and being here is what makes it testable without a
+ * network, which the function written to keep a failure email informative most
+ * needs. Apps Script shares one global scope across files, so Code.gs,
+ * TockifyJob.gs and TockifyService.gs all reach it from here.
+ *
+ * @param {*} e - whatever was thrown; not necessarily an Error
+ * @returns {string}
+ */
+function tockifyErrorText_(e) {
+  // null and undefined first: String(undefined) is the truthy "undefined", so
+  // an emptiness check never catches them and the email says nothing at the
+  // moment it matters most — the case this function exists for. Reading
+  // .message off either one would also throw, out of a catch block, which is
+  // the one place a throw must not happen.
+  if (e === null || e === undefined) return '(' + String(e) + ' thrown)';
+
+  var msg = e.message ? String(e.message) : String(e);
+  if (!msg) msg = '(empty ' + (typeof e) + ' thrown)';
+
+  var stack = e.stack ? String(e.stack) : '';
+  if (!stack) return msg;
+
+  // A V8 stack already opens with "Error: <message>", so prepending prints the
+  // message twice. Guarded rather than assumed: a runtime whose stack omits it
+  // still needs it, and this email is the only copy anyone gets.
+  return stack.indexOf(msg) === -1 ? msg + '\n' + stack : stack;
 }

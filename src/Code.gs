@@ -141,8 +141,13 @@ function submitEvent(eventData) {
         eventData.source_url
       );
     } catch (e) {
+      // tockifyErrorText_ (TockifyUtil.gs — Apps Script shares one global scope
+      // across files) rather than e.message: this one is read in the browser by
+      // the person who just submitted, and a throw with no .message would show
+      // them "Could not queue the Tockify update (undefined)", which tells them
+      // nothing to report and nothing to act on.
       warnings = warnings.concat(['Could not queue the Tockify update (' +
-        e.message + ') — set the image and tag by hand in Tockify.']);
+        tockifyErrorText_(e) + ') — set the image and tag by hand in Tockify.']);
     }
   }
 

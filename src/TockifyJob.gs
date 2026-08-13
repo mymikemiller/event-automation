@@ -189,36 +189,6 @@ function tockifyApplyJob_(cookie, job) {
 }
 
 /**
- * Readable text for a caught throw.
- *
- * e.message alone discards e.stack, and the email is the only forensic record
- * an unattended trigger leaves behind — the execution log is gone in days and
- * nobody is watching it live. A non-Error throw (a bare string, a host object)
- * has no .message at all, and rendering it produced "unhandled exception:
- * undefined", an email that says nothing at the moment it matters most.
- *
- * @param {*} e - whatever was thrown; not necessarily an Error
- * @returns {string}
- */
-function tockifyErrorText_(e) {
-  // null and undefined first: String(undefined) is the truthy "undefined", so
-  // an emptiness check never catches them and the email says nothing at the
-  // moment it matters most — the case this function exists for.
-  if (e === null || e === undefined) return '(' + String(e) + ' thrown)';
-
-  var msg = e.message ? String(e.message) : String(e);
-  if (!msg) msg = '(empty ' + (typeof e) + ' thrown)';
-
-  var stack = e.stack ? String(e.stack) : '';
-  if (!stack) return msg;
-
-  // A V8 stack already opens with "Error: <message>", so prepending prints the
-  // message twice. Guarded rather than assumed: a runtime whose stack omits it
-  // still needs it, and this email is the only copy anyone gets.
-  return stack.indexOf(msg) === -1 ? msg + '\n' + stack : stack;
-}
-
-/**
  * Emails the script owner. Failures here are loud on purpose — these endpoints
  * are undocumented and can change without notice.
  *
@@ -252,7 +222,11 @@ function tockifyNotify_(subject, body) {
   try {
     MailApp.sendEmail(to, '[Event Automation] ' + subject, body);
   } catch (e) {
-    Logger.log('Tockify notify failed (' + e.message + '): ' + subject + ' — ' + body);
+    // The Logger line is the ONLY record of this failure — the email that would
+    // have carried it is the thing that just failed — so it gets the same
+    // treatment the email gets: a non-Error throw has no .message, and
+    // "Tockify notify failed (undefined)" loses the quota diagnosis entirely.
+    Logger.log('Tockify notify failed (' + tockifyErrorText_(e) + '): ' + subject + ' — ' + body);
   }
 }
 
