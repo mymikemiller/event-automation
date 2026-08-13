@@ -449,7 +449,7 @@ git commit -m "test: probe where tagset lives on a Tockify event group"
 
 ---
 
-## Task 4: Resolve shortened Meetup links — **DONE** (live test run 2026-08-12 in Task 9)
+## Task 4: Resolve shortened Meetup links — **DONE** (live test passed 2026-08-13, batched into Task 9)
 
 **Files:**
 - Modify: `src/TockifyUtil.gs` (new `tockifyRedirectTarget_`; cases in `test_tockifyUtil`)
@@ -989,7 +989,9 @@ below:**
 
 1. The tag write is proven: `tags` went `[]` → `["Austin-Vegan-Association"]` on
    "August Afternoon Yoga" (uid 135), a Google-synced external event.
-   `test_tockifyIsAvaEvent_live` (Step 3 item 1) passed on 2026-08-12.
+   `test_tockifyIsAvaEvent_live` (Step 3 item 1) also passed, on 2026-08-13 —
+   the 2026-08-12 date is when the live 302 it asserts was *observed*, not when
+   the function was run.
 2. The scratch test was **kept, not deleted**, and lives in
    `src/TockifyService.gs` as `test_tockifyAvaTagEndToEnd_live` (`9a61618`)
    beside the other `*_live` functions. It also enforces the precondition in code
@@ -999,8 +1001,22 @@ below:**
    it was `1` before and `1` after a write that demonstrably changed the record,
    so it is not a mutation signal. Recorded as rejected in the design doc.
 
-Step 4's regression check — submitting a non-AVA event with an image through the
-web app — has no record either way in this branch. Treat it as unconfirmed.
+4. Step 4's regression check **was run** on 2026-08-13: a non-AVA event
+   (`tickets.austintheatre.org`) submitted with an image. The flyer landed on
+   Tockify, no tag was added, no email was sent.
+
+   But it went in through the bookmarked `/exec` URL, which `deploy.sh` pins to
+   an immutable version — so `submitEvent` ran the **old** code while the
+   trigger, which runs head, ran the new. That makes it a stronger test of one
+   thing and no test of another. It proved the **legacy-job migration path**: a
+   record written by the 3-argument `tockifyQueueAdd_`, carrying no `sourceUrl`,
+   drained correctly through the rewritten `tockifyApplyJob_` and the new
+   `imageIdNg` value check. That is the path every job already queued at deploy
+   time will take, and it was asserted in two places without proof until now.
+
+   Still unproven after all four runs: a **combined** write, with `imageSetId`
+   and `addTag` in the same PUT. Run 1 was tag-only, run 4 image-only. Closing
+   it needs a deploy plus one AVA-hosted Meetup event submitted with an image.
 
 **Files:**
 - Modify: `src/TockifyJob.gs` (temporary scratch test, removed in Step 5)
