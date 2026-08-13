@@ -26,8 +26,13 @@ function test_tockifyUploadImage_live() {
  * Also logs `version` before and after. If it increments, the server really did
  * mutate the record — a signal worth having for any future field.
  *
- * Fixture is uid 135, "August Afternoon Yoga", 2026-08-30 12:30 America/Chicago.
- * Delete this function once the branch is verified.
+ * Ran green on 2026-08-13: tags went [] -> ["Austin-Vegan-Association"] on a
+ * Google-synced external event, which is what proved the field writable.
+ * `version` stayed 1 across that write, so it is not a mutation signal.
+ *
+ * The fixture below is spent — that event is tagged again. To re-run after a
+ * change to the tag path, re-point the four constants at any AVA event on the
+ * calendar and clear its tag in the Tockify UI first.
  */
 function test_tockifyAvaTagEndToEnd_live() {
   var TITLE = '🧘 August Afternoon Yoga 🧘';

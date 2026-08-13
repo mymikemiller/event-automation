@@ -240,6 +240,21 @@ Live tests, editor-run, matching `test_tockifyLogin_live`:
   rather than reasoning by analogy: the analogy correctly predicted "flattened"
   and still got the field wrong, and writing the wrong field here returns a
   silent 200 rather than an error.
+- ~~**Whether `tags` is writable is unproven.**~~ **Resolved by live end-to-end
+  run on 2026-08-13.** The tag was removed from "August Afternoon Yoga" (uid 135)
+  by hand, a tag-only job queued, and the trigger drained it: `tags` went from
+  `[]` to `["Austin-Vegan-Association"]` on a Google-synced external event. The
+  read-only probe could only establish where the tag *lives*; this establishes
+  that the field accepts a write.
+- **`version` is not a mutation signal.** The same run logged `version=1` before
+  and `version=1` after a write that demonstrably changed the record. So it
+  cannot be used as a general "the server really mutated this" check — an idea
+  worth recording as *rejected*, because it is an attractive one: it would have
+  independently covered the weaker `imageSets` read-back for any field. Since we
+  round-trip `version` unchanged inside the whole-record PUT and the write was
+  accepted, the server also does not appear to enforce it as an optimistic lock.
+  Neither conclusion is proven negative — the server may check without bumping —
+  but nothing should be built on it.
 - **Editor-run required.** `clasp run` does not work on this project (web app,
   not an API executable), so the live probes are run by hand from the Apps
   Script editor.
