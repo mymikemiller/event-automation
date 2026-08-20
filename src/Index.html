@@ -5,44 +5,235 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Event Automation</title>
   <style>
+    :root {
+      --blue: #1a73e8;
+      --blue-dark: #174ea6;
+      --blue-soft: #e8f0fe;
+      --green: #34a853;
+      --red: #c5221f;
+      --amber: #b06000;
+      --ink: #202124;
+      --ink-soft: #5f6368;
+      --line: #dadce0;
+      --bg: #f1f3f4;
+      --card: #ffffff;
+      --radius: 10px;
+      --tap: 48px;
+    }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; color: #333; padding: 16px; }
-    h1 { font-size: 1.3rem; margin-bottom: 16px; color: #1a73e8; }
-    .card { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 16px; }
-    label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 4px; color: #555; }
-    input, textarea { width: 100%; border: 1px solid #ddd; border-radius: 4px; padding: 8px; font-size: 0.95rem; }
-    textarea { min-height: 100px; resize: vertical; }
-    button { width: 100%; padding: 12px; border: none; border-radius: 6px; font-size: 1rem; font-weight: 600; cursor: pointer; margin-top: 8px; }
-    .btn-primary { background: #1a73e8; color: white; }
-    .btn-primary:disabled { background: #aaa; cursor: not-allowed; }
-    .btn-success { background: #34a853; color: white; }
-    .status { padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 0.9rem; }
-    .status.info { background: #e8f0fe; color: #1a73e8; }
-    .status.warn { background: #fef7e0; color: #b06000; border: 1px solid #f9c840; }
-    .status.error { background: #fce8e6; color: #c5221f; }
+
+    /* 16px root, and no phone-initiated text inflation. */
+    html { font-size: 16px; -webkit-text-size-adjust: 100%; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      font-size: 1rem;
+      line-height: 1.5;
+      padding: 12px 12px 16px;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+
+    h1 { font-size: 1.35rem; font-weight: 600; margin-bottom: 12px; color: var(--blue); }
+
+    .card {
+      background: var(--card);
+      border-radius: var(--radius);
+      padding: 16px;
+      box-shadow: 0 1px 2px rgba(60,64,67,.3), 0 1px 3px 1px rgba(60,64,67,.15);
+      margin-bottom: 14px;
+    }
+
+    .card-title {
+      font-size: .78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--ink-soft);
+      margin-bottom: 14px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    label, .field-label {
+      display: block;
+      font-size: .95rem;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: var(--ink-soft);
+    }
+
+    /* font-size must stay at 1rem/16px: anything smaller makes mobile
+       browsers zoom the page when the field takes focus. */
+    input, textarea {
+      width: 100%;
+      min-height: var(--tap);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 1rem;
+      font-family: inherit;
+      line-height: 1.4;
+      color: var(--ink);
+      background: #fff;
+    }
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: var(--blue);
+      box-shadow: 0 0 0 2px var(--blue-soft);
+    }
+    textarea { min-height: 160px; resize: vertical; }
+
+    /* Both of these are paste targets, so they open roomy. */
+    #paste-input { min-height: 260px; }
+    #f-description { min-height: 180px; }
+
+    button {
+      width: 100%;
+      min-height: 52px;
+      padding: 14px 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    .btn-primary { background: var(--blue); color: #fff; }
+    .btn-primary:disabled { background: #bdc1c6; cursor: not-allowed; }
+    .btn-success { background: var(--green); color: #fff; }
+    .btn-secondary { background: #fff; color: var(--ink-soft); border: 1px solid var(--line); }
+
+    /* Keeps the primary action reachable without scrolling to the end of a
+       long form. Where sticky does not engage (card shorter than the
+       viewport, or an iframe sized to full content height) this degrades to
+       normal flow at the bottom of the card -- where the button already was. */
+    .action-bar {
+      position: sticky;
+      bottom: 0;
+      z-index: 10;
+      background: var(--card);
+      margin: 14px -16px -16px;
+      padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+      border-top: 1px solid var(--line);
+      border-radius: 0 0 var(--radius) var(--radius);
+    }
+    /* Sits outside the cards, spanning the whole confirm form, so the primary
+       action stays on screen no matter which field you are editing. */
+    .action-bar.floating {
+      margin: 0 0 14px;
+      padding: 12px 12px calc(12px + env(safe-area-inset-bottom, 0px));
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: 0 -2px 10px rgba(60,64,67,.16);
+    }
+    .action-bar button { margin-top: 0; }
+    .action-bar button + button { margin-top: 8px; }
+
+    /* A pinned bar costs screen space for the whole scroll, so the pair share
+       one row instead of stacking. row-reverse puts the primary (first in DOM,
+       for tab order) on the right, where a thumb reaches it. */
+    .action-bar.split { display: flex; flex-direction: row-reverse; gap: 10px; }
+    .action-bar.split button { width: auto; margin-top: 0; padding: 14px 10px; }
+    .action-bar.split .btn-primary, .action-bar.split .btn-success { flex: 2 1 0; }
+    .action-bar.split .btn-secondary { flex: 1 1 0; }
+
+    .status { padding: 12px 14px; border-radius: 8px; margin-bottom: 12px; font-size: .95rem; }
+    .status.info { background: var(--blue-soft); color: var(--blue-dark); }
+    .status.warn { background: #fef7e0; color: var(--amber); border: 1px solid #f9c840; }
+    .status.error { background: #fce8e6; color: var(--red); }
     .status.success { background: #e6f4ea; color: #137333; }
-    .login-wall-notice { background: #fff3e0; border: 1px solid #ff9800; border-radius: 6px; padding: 12px 14px; margin-bottom: 14px; font-size: 0.88rem; color: #5d3a00; }
-    .login-wall-notice strong { display: block; margin-bottom: 4px; font-size: 0.95rem; color: #e65100; }
-    .login-wall-notice a { color: #1a73e8; font-weight: 600; }
-    .field-group { margin-bottom: 12px; }
-    .warning-note { font-size: 0.8rem; color: #b06000; margin-top: 4px; }
+
+    .login-wall-notice {
+      background: #fff3e0; border: 1px solid #ff9800; border-radius: 8px;
+      padding: 14px; margin-bottom: 14px; font-size: .95rem; color: #5d3a00;
+    }
+    .login-wall-notice strong { display: block; margin-bottom: 6px; font-size: 1rem; color: #e65100; }
+    .login-wall-notice a { color: var(--blue); font-weight: 600; }
+
+    .field-group { margin-bottom: 16px; }
+    .field-group:last-child { margin-bottom: 0; }
+    .warning-note { font-size: .88rem; color: var(--amber); margin-top: 6px; }
+
     #url-section, #confirm-section, #result-section { display: none; }
     #url-section { display: block; }
-    .field-row { display: flex; gap: 8px; }
-    .field-row .field-group { flex: 1; }
-    a.link-btn { display: block; text-align: center; padding: 10px; border-radius: 6px; background: #e8f0fe; color: #1a73e8; text-decoration: none; font-weight: 600; margin-top: 8px; }
-    .img-preview { display: block; width: 100%; max-height: 320px; object-fit: contain; margin-top: 12px; border-radius: 6px; border: 1px solid #ddd; background: #f8f9fa; }
-    .img-preview-fallback { margin-top: 12px; padding: 10px 12px; border-radius: 6px; font-size: 0.86rem; background: #f1f3f4; color: #777; border: 1px solid #ddd; }
-    .rec-banner { padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 0.86rem; background: #e8f0fe; color: #174ea6; border: 1px solid #c5d3f0; }
-    .rec-banner.checking { background: #f1f3f4; color: #777; border-color: #ddd; }
-    .rec-banner.single { background: #f1f3f4; color: #555; border-color: #ddd; }
-    .date-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
-    .date-row input[type=date] { flex: 2 1 auto; min-width: 0; }
-    .date-row input[type=time] { flex: 1 1 auto; min-width: 0; }
-    .date-row .sep { color: #999; font-size: 0.85rem; }
-    .date-row .diff-tag { font-size: 0.65rem; font-weight: 700; color: #b06000; background: #fef7e0; border: 1px solid #f9c840; border-radius: 3px; padding: 1px 4px; white-space: nowrap; }
-    .date-row .rm { flex: 0 0 auto; background: none; border: none; color: #c5221f; font-size: 1rem; cursor: pointer; width: auto; margin: 0; padding: 0 4px; }
-    .btn-add-date { width: auto; padding: 6px 12px; font-size: 0.82rem; background: #e8f0fe; color: #1a73e8; margin-top: 2px; }
+
+    a.link-btn {
+      display: block; text-align: center; min-height: var(--tap);
+      padding: 14px; border-radius: 8px; background: var(--blue-soft);
+      color: var(--blue); text-decoration: none; font-weight: 600; margin-top: 10px;
+    }
+
+    .img-preview {
+      display: block; width: 100%; max-height: 60vh; object-fit: contain;
+      margin-top: 12px; border-radius: 8px; border: 1px solid var(--line); background: #f8f9fa;
+    }
+    .img-preview-fallback {
+      margin-top: 12px; padding: 12px 14px; border-radius: 8px;
+      font-size: .9rem; background: var(--bg); color: var(--ink-soft); border: 1px solid var(--line);
+    }
+
+    .rec-banner {
+      padding: 12px 14px; border-radius: 8px; margin-bottom: 12px;
+      font-size: .92rem; background: var(--blue-soft); color: var(--blue-dark); border: 1px solid #c5d3f0;
+    }
+    .rec-banner.checking { background: var(--bg); color: var(--ink-soft); border-color: var(--line); }
+    .rec-banner.single { background: var(--bg); color: var(--ink-soft); border-color: var(--line); }
+
+    /* One occurrence per card. The old single-line layout squeezed a date,
+       two times and a remove button onto one row -- unusable on a phone. */
+    .date-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+      background: #fbfbfb;
+    }
+    .date-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .date-card-head .n {
+      flex: 1 1 auto;
+      font-size: .78rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--ink-soft);
+    }
+    .date-card .rm {
+      flex: 0 0 auto;
+      width: 40px; min-width: 40px; min-height: 40px;
+      margin: 0; padding: 0;
+      background: transparent; color: var(--red);
+      font-size: 1.2rem; line-height: 1; border-radius: 8px;
+    }
+    .date-card .rm:active { background: #fce8e6; }
+    .diff-tag {
+      flex: 0 0 auto;
+      font-size: .7rem; font-weight: 700; color: var(--amber);
+      background: #fef7e0; border: 1px solid #f9c840;
+      border-radius: 4px; padding: 3px 6px; white-space: nowrap;
+    }
+    .time-row { display: flex; gap: 10px; margin-top: 10px; }
+    .time-row > div { flex: 1 1 0; min-width: 0; }
+    .time-row .field-label { font-size: .82rem; margin-bottom: 4px; }
+
+    .btn-add-date {
+      width: 100%; min-height: var(--tap); padding: 12px;
+      font-size: .95rem; background: var(--blue-soft); color: var(--blue); margin-top: 4px;
+    }
+
+    #result-title { font-size: 1.15rem; font-weight: 600; margin: 10px 0 4px; }
+    #img-url-text { margin-top: 8px; font-size: .85rem; color: var(--ink-soft); }
+
+    /* Roomier on a desktop window, where vertical space is cheap. */
+    @media (min-width: 700px) {
+      body { padding: 24px 24px 32px; }
+      h1 { font-size: 1.6rem; margin-bottom: 20px; }
+      .card { padding: 24px; }
+      .action-bar { margin: 20px -24px -24px; padding: 16px 24px; }
+      .action-bar.floating { margin: 0 0 20px; padding: 16px; }
+      .action-bar button + button { margin-top: 0; }
+    }
   </style>
 </head>
 <body>
@@ -52,10 +243,13 @@
   <div id="url-section" class="card">
     <div class="field-group">
       <label for="url-input">Event Page URL</label>
-      <input type="url" id="url-input" placeholder="https://..." autocomplete="off">
+      <input type="url" id="url-input" placeholder="https://..." autocomplete="off"
+             inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
     </div>
     <div id="url-status"></div>
-    <button class="btn-primary" id="extract-btn" onclick="extractEvent()">Extract Event Info</button>
+    <div class="action-bar">
+      <button class="btn-primary" id="extract-btn" onclick="extractEvent()">Extract Event Info</button>
+    </div>
   </div>
 
   <!-- Step 1b: Paste content (shown when page is behind a login wall) -->
@@ -64,18 +258,22 @@
     <div class="card">
       <div class="field-group">
         <label for="paste-input">Paste the event post content</label>
-        <textarea id="paste-input" style="min-height:180px" placeholder="Open the event in your browser, close the login popup, select the event text, and paste it here..."></textarea>
+        <textarea id="paste-input" placeholder="Open the event in your browser, close the login popup, select the event text, and paste it here..."></textarea>
       </div>
       <div id="paste-status"></div>
-      <button class="btn-primary" id="paste-btn" onclick="extractFromPasted()">Extract Event Info</button>
-      <button class="btn-primary" style="background:#888;margin-top:8px" onclick="reset()">Start Over</button>
+      <div class="action-bar split">
+        <button class="btn-primary" id="paste-btn" onclick="extractFromPasted()">Extract Event Info</button>
+        <button class="btn-secondary" onclick="reset()">Start Over</button>
+      </div>
     </div>
   </div>
 
   <!-- Step 2: Confirmation Form -->
   <div id="confirm-section">
     <div id="confirm-status"></div>
+
     <div class="card">
+      <div class="card-title">Event</div>
       <div class="field-group">
         <label for="f-title">Title *</label>
         <input type="text" id="f-title">
@@ -87,6 +285,10 @@
         <button type="button" class="btn-add-date" onclick="addDateRow()">+ Add date</button>
         <div id="end-time-note" class="warning-note"></div>
       </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Details</div>
       <div class="field-group">
         <label for="f-location">Location</label>
         <input type="text" id="f-location">
@@ -95,30 +297,40 @@
         <label for="f-description">Description</label>
         <textarea id="f-description"></textarea>
       </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Media &amp; link</div>
       <div class="field-group">
         <label for="f-link-label">Source Link Label</label>
         <input type="text" id="f-link-label">
       </div>
       <div class="field-group">
         <label for="f-image-url">Image URL</label>
-        <input type="url" id="f-image-url" oninput="queueImagePreview()">
+        <input type="url" id="f-image-url" oninput="queueImagePreview()"
+               inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
         <img id="f-image-preview" class="img-preview" alt="Event image preview" style="display:none">
         <div id="f-image-preview-fallback" class="img-preview-fallback" style="display:none">
-          Image preview unavailable — check the URL, or the link may have expired.
+          Image preview unavailable &mdash; check the URL, or the link may have expired.
         </div>
       </div>
-      <div id="submit-status"></div>
+    </div>
+
+    <div id="submit-status"></div>
+    <div class="action-bar floating split">
       <button class="btn-success" id="submit-btn" onclick="submitEvent()">Create Calendar Event</button>
-      <button class="btn-primary" style="background:#888;margin-top:8px" onclick="reset()">Start Over</button>
+      <button class="btn-secondary" onclick="reset()">Start Over</button>
     </div>
   </div>
 
   <!-- Step 3: Result -->
   <div id="result-section" class="card">
     <div id="result-status"></div>
-    <div id="result-title" style="display:none;font-size:1.1rem;font-weight:600;margin:8px 0 4px"></div>
+    <div id="result-title" style="display:none"></div>
     <div id="result-links"></div>
-    <button class="btn-primary" style="margin-top:12px" onclick="reset()">Add Another Event</button>
+    <div class="action-bar">
+      <button class="btn-primary" onclick="reset()">Add Another Event</button>
+    </div>
   </div>
 
   <script>
@@ -222,15 +434,28 @@
         end = end || common.end_time;
       }
 
+      // Input ORDER is a contract: readDateRows() and renderPlan() index
+      // getElementsByTagName('input') as [date, start, end]. The .diff-tag and
+      // .rm class names are looked up the same way. Keep all three stable.
       var row = document.createElement('div');
-      row.className = 'date-row';
+      row.className = 'date-card';
       row.innerHTML =
+        '<div class="date-card-head">' +
+          '<span class="n"></span>' +
+          '<span class="diff-tag" style="display:none">diff time</span>' +
+          '<button type="button" class="rm" onclick="removeDateRow(this)" title="Remove date">&#10005;</button>' +
+        '</div>' +
         '<input type="date" value="' + (date || '') + '" oninput="onDatesChanged()">' +
-        '<input type="time" value="' + (start || '') + '" oninput="onDatesChanged()">' +
-        '<span class="sep">&ndash;</span>' +
-        '<input type="time" value="' + (end || '') + '" oninput="onDatesChanged()">' +
-        '<span class="diff-tag" style="display:none">diff</span>' +
-        '<button type="button" class="rm" onclick="removeDateRow(this)" title="Remove date">&#10005;</button>';
+        '<div class="time-row">' +
+          '<div>' +
+            '<span class="field-label">Starts</span>' +
+            '<input type="time" value="' + (start || '') + '" oninput="onDatesChanged()">' +
+          '</div>' +
+          '<div>' +
+            '<span class="field-label">Ends</span>' +
+            '<input type="time" value="' + (end || '') + '" oninput="onDatesChanged()">' +
+          '</div>' +
+        '</div>';
       rows.appendChild(row);
       onDatesChanged();
     }
@@ -255,7 +480,9 @@
     function removeDateRow(btn) {
       var rows = document.getElementById('date-rows');
       if (rows.children.length <= 1) return;
-      rows.removeChild(btn.parentNode);
+      // The button is nested inside .date-card-head now, so parentNode is the
+      // header rather than the card itself.
+      rows.removeChild(btn.closest('.date-card'));
       onDatesChanged();
     }
 
@@ -275,6 +502,9 @@
       for (var i = 0; i < rows.length; i++) {
         rows[i].getElementsByClassName('rm')[0].style.visibility =
           rows.length > 1 ? 'visible' : 'hidden';
+        // Stacked cards lose the visual run of a list, so each states its place.
+        rows[i].getElementsByClassName('n')[0].textContent =
+          rows.length > 1 ? 'Date ' + (i + 1) + ' of ' + rows.length : 'Date';
       }
 
       var occ = readDateRows().filter(function (o) { return o.date && o.start_time; });
@@ -453,8 +683,8 @@
                  '<div id="img-preview-fallback" class="img-preview-fallback" style="display:none">' +
                  'Image preview unavailable — the link may have expired. The URL below is still what was used.' +
                  '</div>' +
-                 '<button onclick="copyImageUrl()" class="btn-primary" style="margin-top:8px">Copy Image URL</button>' +
-                 '<input id="img-url-text" type="text" readonly value="' + safeUrl + '" style="margin-top:6px;font-size:0.8rem">';
+                 '<button id="copy-img-btn" onclick="copyImageUrl()" class="btn-secondary">Copy Image URL</button>' +
+                 '<input id="img-url-text" type="text" readonly value="' + safeUrl + '">';
       }
       document.getElementById('result-links').innerHTML = links;
     }
@@ -514,8 +744,32 @@
 
     function copyImageUrl() {
       var input = document.getElementById('img-url-text');
+      // execCommand('copy') is unreliable on mobile browsers; try the async
+      // Clipboard API first and keep the old path as the fallback.
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(input.value).then(
+          function () { flashCopied(); },
+          function () { legacyCopy(input); }
+        );
+        return;
+      }
+      legacyCopy(input);
+    }
+
+    function legacyCopy(input) {
+      input.removeAttribute('readonly');
       input.select();
-      try { document.execCommand('copy'); } catch(e) {}
+      input.setSelectionRange(0, input.value.length);
+      try { document.execCommand('copy'); flashCopied(); } catch (e) {}
+      input.setAttribute('readonly', 'readonly');
+    }
+
+    function flashCopied() {
+      var btn = document.getElementById('copy-img-btn');
+      if (!btn) return;
+      var original = btn.textContent;
+      btn.textContent = 'Copied';
+      setTimeout(function () { btn.textContent = original; }, 1500);
     }
 
     function reset() {

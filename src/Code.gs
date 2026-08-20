@@ -15,8 +15,13 @@ function doGet(e) {
 
   var t = HtmlService.createTemplateFromFile('Index');
   t.webAppUrl = webAppUrl;
+  // Apps Script serves this HTML inside a sandboxed iframe, so the viewport
+  // meta tag in Index.html applies only to the inner document. Without a tag
+  // on the *outer* page, mobile browsers lay it out at a ~980px virtual width
+  // and scale everything down. addMetaTag() is what reaches the outer page.
   return t.evaluate()
     .setTitle('Event Automation')
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
