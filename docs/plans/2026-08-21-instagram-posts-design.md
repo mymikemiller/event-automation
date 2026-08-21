@@ -64,3 +64,26 @@ still work from a calendar invite.
 Any step that comes up empty returns the existing `allowPaste` error, so the
 paste-the-text-in-by-hand path catches an Instagram change exactly as it
 catches a Facebook one.
+
+## Live run
+
+Deployed as version 38 and run against
+`https://www.instagram.com/p/DcHA9syRjX4/` on 2026-08-21. Confirmed working by
+the person who ran it, against the four things worth checking:
+
+| Checked | Expected | Why it is the tell |
+|---|---|---|
+| Date | 2026-08-22 | The caption says "this Saturday, August 22nd" with no year at all. |
+| Location | Nissi's VegMex | Appears nowhere in the caption text — only in the artwork. |
+| Title | Summer Pop-Up Market | |
+| Image | The tall flyer | A square would mean a crop had slipped through. |
+
+The year and the location are what make this a real test of the second pass:
+neither is in the caption, so the caption pass has to return them null and the
+flyer has to supply them. Times (11:30–15:30) are in both sources and prove
+nothing on their own.
+
+Not exercised by this run, and still unproven: a caption that states everything,
+which should skip the image pass entirely; and `claudeImageBlock_`'s degrade
+path, which logs and returns null on a failed fetch, an unusable content type or
+an oversized image, leaving the caption-only answer standing.
