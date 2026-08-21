@@ -162,6 +162,51 @@ function extractEventData(url) {
     };
   }
 
+  // Instagram serves the post through its embed endpoint with no login — see
+  // InstagramService.gs. The caption is often chatty rather than complete, so
+  // the flyer is read whenever the caption leaves a field empty.
+  if (instagramShortcode_(url)) {
+    var post = fetchInstagramPost_(url);
+    if (!post) {
+      return {
+        error: 'Could not read this Instagram post automatically — it may be private or ' +
+               'deleted, or Instagram may have changed its embed format.',
+        allowPaste: true,
+        originalUrl: url
+      };
+    }
+
+    var igContent = formatInstagramPostForClaude_(post, url, []);
+    var igResult = callClaude_(igContent, false);
+    if (igResult === null) igResult = callClaude_(igContent, true);
+
+    // Second pass with the flyer attached. A caption that stated everything
+    // never gets here, and so never pays for the image.
+    var missing = igMissingFields_(igResult);
+    if (post.imageUrl && missing.length) {
+      var visionContent = formatInstagramPostForClaude_(post, url, missing);
+      var visionResult = callClaude_(visionContent, false, post.imageUrl);
+      if (visionResult === null) visionResult = callClaude_(visionContent, true, post.imageUrl);
+      if (visionResult) igResult = visionResult;
+    }
+
+    if (!igResult) {
+      return {
+        error: 'Could not extract event data from this Instagram post.',
+        allowPaste: true,
+        originalUrl: url
+      };
+    }
+
+    // The caption is the description, copied through verbatim rather than
+    // rewritten by the model — the rule Facebook events already follow.
+    if (post.captionHtml) igResult.description = post.captionHtml;
+    // Always the uncropped original, whichever pass produced the fields.
+    if (post.imageUrl) igResult.image_url = post.imageUrl;
+    igResult.source_link_label = 'See the post on Instagram';
+    return { data: igResult };
+  }
+
   var html;
   try {
     var response = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
@@ -324,9 +369,12 @@ function extractICalSection_(html, pageUrl) {
  * Calls Claude API and returns parsed JSON, or null on failure.
  * @param {string} htmlContent
  * @param {boolean} strict - Use stricter retry prompt
+ * @param {string} [imageUrl] - Image to read alongside the text. Skipped
+ *     silently if it cannot be fetched, so a flaky CDN degrades to a text-only
+ *     answer rather than to no answer at all.
  * @returns {Object|null}
  */
-function callClaude_(htmlContent, strict) {
+function callClaude_(htmlContent, strict, imageUrl) {
   var apiKey = PropertiesService.getScriptProperties().getProperty('CLAUDE_API_KEY');
   var systemPrompt = strict
     ? EXTRACTION_PROMPT + '\n\nCRITICAL: Your previous response was not valid JSON. Return ONLY the raw JSON object starting with { and ending with }. Absolutely no other text.'
@@ -335,11 +383,17 @@ function callClaude_(htmlContent, strict) {
   var today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
   systemPrompt = 'Today\'s date is ' + today + '.\n\n' + systemPrompt;
 
+  var userText = 'Extract event details from this HTML:\n\n' + htmlContent;
+  var imageBlock = imageUrl ? claudeImageBlock_(imageUrl) : null;
+
   var payload = {
     model: CLAUDE_MODEL,
     max_tokens: 4096,
     system: systemPrompt,
-    messages: [{ role: 'user', content: 'Extract event details from this HTML:\n\n' + htmlContent }]
+    messages: [{
+      role: 'user',
+      content: imageBlock ? [imageBlock, { type: 'text', text: userText }] : userText
+    }]
   };
 
   try {
@@ -359,6 +413,54 @@ function callClaude_(htmlContent, strict) {
     return parseClaudeResponse_(body.content[0].text);
   } catch (e) {
     Logger.log('Claude API error: ' + e.message);
+    return null;
+  }
+}
+
+// Anthropic rejects a request image over 5MB once base64-encoded, and base64
+// inflates by 4/3. Flyers run a few hundred KB, so this only ever catches
+// something that is not a flyer.
+var CLAUDE_MAX_IMAGE_BYTES = 3750000;
+
+var CLAUDE_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+/**
+ * Downloads an image and packs it as a Claude content block.
+ *
+ * The bytes are sent inline rather than the URL being handed to Anthropic to
+ * fetch: Instagram's CDN URLs are signed and short-lived, and are served from a
+ * region-specific host that need not answer someone else's fetch.
+ *
+ * @param {string} imageUrl
+ * @returns {Object|null} An image content block, or null if it cannot be sent
+ */
+function claudeImageBlock_(imageUrl) {
+  try {
+    var resp = UrlFetchApp.fetch(imageUrl, { muteHttpExceptions: true, followRedirects: true });
+    if (resp.getResponseCode() !== 200) {
+      Logger.log('claudeImageBlock_: HTTP ' + resp.getResponseCode());
+      return null;
+    }
+
+    var blob = resp.getBlob();
+    var mediaType = String(blob.getContentType() || '').toLowerCase().split(';')[0];
+    if (CLAUDE_IMAGE_TYPES.indexOf(mediaType) < 0) {
+      Logger.log('claudeImageBlock_: unusable content type ' + mediaType);
+      return null;
+    }
+
+    var bytes = blob.getBytes();
+    if (bytes.length > CLAUDE_MAX_IMAGE_BYTES) {
+      Logger.log('claudeImageBlock_: image is ' + bytes.length + ' bytes, too large to send');
+      return null;
+    }
+
+    return {
+      type: 'image',
+      source: { type: 'base64', media_type: mediaType, data: Utilities.base64Encode(bytes) }
+    };
+  } catch (e) {
+    Logger.log('claudeImageBlock_ error: ' + e.message);
     return null;
   }
 }

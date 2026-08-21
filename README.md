@@ -93,6 +93,55 @@ the event text in by hand.
 
 ---
 
+## Instagram posts
+
+Public Instagram post, reel and IGTV URLs work with no login.
+
+The post URL itself gives us nothing: a plain fetch returns a JavaScript shell,
+and the `og:` tags a crawler gets carry a **square 640×640 crop** of the flyer.
+The crop cannot be undone by editing the URL — the `stp=` crop specification is
+covered by the signed `oh=` token, so a rewritten URL is answered with HTTP 403.
+
+So the script reads `/p/<shortcode>/embed/captioned/` instead, which
+server-renders the whole post: the full caption, and the **uncropped original**
+image. `/p/`, `/reel/` and `/tv/` all resolve the same shortcode, so every form
+is normalised to `/p/`.
+
+The "Never miss a post from …" dialog never comes into it. Like Facebook's "See
+more on Facebook" dialog, it is a client-side overlay drawn over content the
+server has already sent — and there is no browser in the loop to draw it.
+
+### Reading the flyer
+
+An Instagram caption is usually chatter rather than a listing: "this Saturday,
+August 22nd" with no year, a venue named only by `@handle`. The flyer it is
+posted with normally states all of it outright.
+
+So extraction runs in two passes. The first reads the caption alone, under
+instructions to report only what the caption says and return null for the rest —
+a guessed end time is indistinguishable from a stated one afterwards, and would
+keep the image closed. If title, date, start time, end time or location came
+back empty, a second pass sends the full image to Claude with the caption
+beside it and the flyer named as authoritative. A caption that stated
+everything never pays for that call.
+
+The image goes to Claude as inline bytes rather than as a URL to fetch:
+Instagram's CDN URLs are signed, short-lived and served from a region-specific
+host that need not answer someone else's request.
+
+Two details worth knowing:
+
+- The caption becomes the description **verbatim** — never passed through the
+  model to be rewritten, the same rule Facebook events follow.
+- Instagram writes `@handle` and `#hashtag` links site-relative with a
+  `utm_source=ig_embed` tracker. Both are rewritten to absolute, tracker-free
+  URLs, so they still work from the calendar event.
+
+If Instagram changes its embed format, the app falls back to asking you to paste
+the post text in by hand.
+
+---
+
 ## Tockify
 
 Events reach Tockify by Google Calendar sync, which carries no image. The script
