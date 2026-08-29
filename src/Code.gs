@@ -9,12 +9,17 @@ function test_processEventUrl_badUrl() {
  * Uses createTemplateFromFile so the web app URL can be reliably embedded
  * into the page at serve time (ScriptApp.getService().getUrl() only works
  * in doGet context, not when called via google.script.run).
+ *
+ * `?url=` pre-fills the event URL box. That is how the "new Meetup event" mail
+ * links here (meetupWebAppLink_) — the point of the mail is to hand over one
+ * URL, so making the reader copy it back out defeats it.
  */
 function doGet(e) {
   var webAppUrl = ScriptApp.getService().getUrl();
 
   var t = HtmlService.createTemplateFromFile('Index');
   t.webAppUrl = webAppUrl;
+  t.prefillUrl = safePrefillUrl_(e && e.parameter && e.parameter.url);
   // Apps Script serves this HTML inside a sandboxed iframe, so the viewport
   // meta tag in Index.html applies only to the inner document. Without a tag
   // on the *outer* page, mobile browsers lay it out at a ~980px virtual width
@@ -23,6 +28,23 @@ function doGet(e) {
     .setTitle('Event Automation')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+/**
+ * The `?url=` query parameter, or '' if it is not an event URL we would fetch.
+ *
+ * Anyone can put anything in a query string, and this value is printed into the
+ * page, so it is whitelisted rather than escaped: an http(s) URL with no quote,
+ * angle bracket, backslash or whitespace in it. `processEventUrl` would reject
+ * anything else anyway — pre-filling the box with it would only look like the
+ * app had accepted it.
+ *
+ * @param {string|undefined} raw
+ * @returns {string}
+ */
+function safePrefillUrl_(raw) {
+  if (!raw) return '';
+  return /^https?:\/\/[^\s"'<>\\]+$/.test(raw) ? raw : '';
 }
 
 /**
@@ -85,10 +107,17 @@ function submitEvent(eventData) {
     }
   }
 
-  // 3. Build full description with source link appended
-  var fullDescription = (eventData.description || '').trim();
+  // 3. Build full description with source link appended. Normalized again here
+  //    rather than trusting extraction: the description arrives from the
+  //    textarea, where a hand edit can add newlines of its own, and the
+  //    calendar is the last place to catch them. The separator is `<br><br>`
+  //    for the same reason — a bare newline reaches Tockify as a break too, so
+  //    writing one here would leave the seam looking different from every
+  //    paragraph break above it.
+  var fullDescription = normalizeDescriptionHtml_(eventData.description);
   if (eventData.source_link_label && eventData.source_url) {
-    fullDescription += '\n\n<a href="' + eventData.source_url + '">' + eventData.source_link_label + '</a>';
+    fullDescription += (fullDescription ? '<br><br>' : '') +
+      '<a href="' + eventData.source_url + '">' + eventData.source_link_label + '</a>';
   }
 
   // 4. Create Calendar event(s)

@@ -244,7 +244,8 @@
     <div class="field-group">
       <label for="url-input">Event Page URL</label>
       <input type="url" id="url-input" placeholder="https://..." autocomplete="off"
-             inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
+             inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false"
+             value="<?= prefillUrl ?>">
     </div>
     <div id="url-status"></div>
     <div class="action-bar">
@@ -786,6 +787,13 @@
       hide('confirm-section');
       hide('result-section');
       show('url-section');
+    }
+
+    // Arriving from the "new Meetup event" mail, the box already holds the URL
+    // (doGet fills it from ?url=), so there is nothing left to type — put the
+    // cursor on the button instead of the field.
+    if (document.getElementById('url-input').value) {
+      document.getElementById('extract-btn').focus();
     }
   </script>
 </body>

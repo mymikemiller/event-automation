@@ -7,11 +7,6 @@
  * days.
  */
 
-// The bookmarked web app URL, kept in step with deploy.sh. ScriptApp
-// .getService().getUrl() only returns a usable value inside doGet, not from a
-// time-driven trigger, so it cannot be read at send time.
-var MEETUP_WEBAPP_URL = 'https://script.google.com/a/macros/atxveg.org/s/AKfycbx_zs0uCLGSxxB3btHhF3ehvdM_3CL2BHK_P0SuCYyRh2FJ61dv21snaSwisHDCb7Fe/exec';
-
 var MEETUP_NOTIFIED_KEY = 'MEETUP_NOTIFIED_IDS';
 var MEETUP_ERROR_STAMP_KEY = 'MEETUP_ERROR_LAST_SENT';
 var MEETUP_ERROR_THROTTLE_MS = 24 * 60 * 60 * 1000;
@@ -183,7 +178,7 @@ function meetupSendNewEventEmail_(event) {
     when + '\n\n' +
     event.url + '\n\n' +
     'This is on meetup.com/' + event.slug + ' but not yet on the calendar.\n' +
-    'Add it here: ' + MEETUP_WEBAPP_URL + '\n';
+    'Add it here: ' + meetupWebAppLink_(event.url) + '\n';
 
   try {
     MailApp.sendEmail(MEETUP_NOTIFY_EMAIL, '[Event Automation] New Meetup event: ' + event.title, body);

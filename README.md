@@ -142,6 +142,45 @@ the post text in by hand.
 
 ---
 
+## Description line breaks
+
+The description travels as HTML — `<br>` for a break, `<ul>`/`<li>` for a list.
+Claude also pretty-prints it, putting a real newline between the tags, and a
+hand edit in the textarea adds more. A browser treats those newlines as
+insignificant whitespace; **Tockify's importer renders each one as a break
+anyway**. So every `<br>\n` pair arrived on the public calendar as two breaks,
+and every newline inside a `<ul>` arrived as an empty bullet:
+
+```
+How this meetup works:
+
+
+  *
+  * We'll gather at 6:30 PM and grab tables together.
+  *
+  * Please order individually at the counter.
+```
+
+`normalizeDescriptionHtml_` (`src/Utilities.gs`) drops a newline that sits next
+to a `<br>` or a list tag as the duplicate it is, and turns one between two runs
+of text into the `<br>` it was standing in for. Runs of `<br>` are otherwise
+left alone: the description is copied verbatim, so a blank line the author wrote
+is theirs to keep.
+
+It runs in `submitEvent`, at the one point the description reaches the calendar,
+rather than back at extraction. The description spends the confirmation screen
+in a textarea, and pretty-printed HTML is a great deal easier to read and edit
+there than one unbroken line — so the newlines stay until they stop being
+useful. Normalizing last also catches the ones a hand edit adds, which an
+extraction-time pass never would.
+
+Same reasoning puts `<br><br>` between the description and the source link
+`submitEvent` appends, where a `\n\n` used to go: a bare newline reaches Tockify
+as a break too, so writing one there would leave that seam looking different
+from every paragraph break above it.
+
+---
+
 ## Tockify
 
 Events reach Tockify by Google Calendar sync, which carries no image. The script
@@ -255,7 +294,7 @@ days. An hourly job watches the groups listed in `MEETUP_GROUPS` and emails
 `MEETUP_NOTIFY_EMAIL` when one of them has published an event that is not yet on
 the calendar.
 
-Both constants are at the top of `src/MeetupService.gs`. Adding a group is
+All three constants are at the top of `src/MeetupService.gs`. Adding a group is
 appending its slug — Meetup event IDs are globally unique rather than per-group,
 so nothing else is per-group:
 
@@ -266,6 +305,13 @@ var MEETUP_GROUPS = ['vegaustin'];
 Events come from Meetup's public iCal feed, `meetup.com/<slug>/events/ical/`,
 which needs no auth and no API key. That is why this doesn't scrape the group
 page through Claude or hold OAuth credentials for Meetup's GraphQL API.
+
+The "Add it here" link in the mail carries the event URL as `?url=`, so the web
+app opens with it already in the box — the mail exists to hand over one URL, and
+making you copy it back out defeats the point. `MEETUP_WEBAPP_URL` is the
+bookmarked `/exec` URL, hard-coded because `ScriptApp.getService().getUrl()`
+only returns a usable value inside `doGet`, never from a time-driven trigger.
+Keep it in step with the deployment ID in `deploy.sh`.
 
 ### Deciding what counts as "new"
 
@@ -357,8 +403,8 @@ If you ever need to change *who* can access the app, edit the `access` value in
 Pure logic runs under Node without touching Google at all:
 
 ```bash
-node tests/run.js FacebookService.gs Extraction.gs RecurrenceService.gs Utilities.gs   # 26 tests
-node tests/run.js MeetupService.gs                                                     # 12 tests
+node tests/run.js FacebookService.gs Extraction.gs RecurrenceService.gs Utilities.gs   # 27 tests
+node tests/run.js MeetupService.gs                                                     # 13 tests
 node tests/run.js TockifyUtil.gs                                                       # 1 test
 node tests/calendar.test.js                                                            # 5 tests
 ```

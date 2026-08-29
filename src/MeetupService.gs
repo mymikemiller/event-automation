@@ -6,6 +6,11 @@
 var MEETUP_GROUPS = ['vegaustin'];
 var MEETUP_NOTIFY_EMAIL = 'mike.miller@atxveg.org';
 
+// The bookmarked web app URL, kept in step with deploy.sh. ScriptApp
+// .getService().getUrl() only returns a usable value inside doGet, not from a
+// time-driven trigger, so it cannot be read when the notification mail is sent.
+var MEETUP_WEBAPP_URL = 'https://script.google.com/a/macros/atxveg.org/s/AKfycbx_zs0uCLGSxxB3btHhF3ehvdM_3CL2BHK_P0SuCYyRh2FJ61dv21snaSwisHDCb7Fe/exec';
+
 // ---------------------------------------------------------------------------
 
 /**
@@ -306,6 +311,22 @@ function test_meetupIsOnCalendar_rejectsPartialMatches() {
   Logger.log('test_meetupIsOnCalendar_rejectsPartialMatches: PASSED');
 }
 
+function test_meetupWebAppLink() {
+  var link = meetupWebAppLink_('https://www.meetup.com/vegaustin/events/316302553/');
+  if (link !== MEETUP_WEBAPP_URL +
+      '?url=https%3A%2F%2Fwww.meetup.com%2Fvegaustin%2Fevents%2F316302553%2F') {
+    throw new Error('unexpected link: ' + link);
+  }
+  // The slashes have to be encoded, not passed through: an unescaped one ends
+  // the /exec path as far as some mail clients' auto-linkers are concerned.
+  if (link.indexOf('meetup.com/vegaustin') >= 0) throw new Error('event URL was not encoded');
+
+  // No URL to hand over is not a reason to send a broken link.
+  if (meetupWebAppLink_('') !== MEETUP_WEBAPP_URL) throw new Error('empty URL should give the bare web app URL');
+
+  Logger.log('test_meetupWebAppLink: ALL PASSED');
+}
+
 function test_meetupExtractEventId() {
   var cases = [
     // Plain canonical URL, with and without the trailing slash.
@@ -536,4 +557,21 @@ function meetupExtractEventId_(url) {
   if (!url) return null;
   var m = String(url).match(/meetup\.com\/[^\/\s]+\/events\/(\d+)/i);
   return m ? m[1] : null;
+}
+
+/**
+ * The web app link for one event, with the event URL already in the box.
+ *
+ * The whole point of the notification mail is to hand over a single URL, so it
+ * travels as `?url=` rather than as something to copy back out by hand. doGet
+ * whitelists the value before printing it (safePrefillUrl_ in Code.gs), which
+ * is why it has to be a plain encoded http(s) URL and nothing cleverer.
+ *
+ * @param {string} eventUrl
+ * @returns {string} The web app URL, pre-filled when there is a URL to fill it with.
+ */
+function meetupWebAppLink_(eventUrl) {
+  return eventUrl
+    ? MEETUP_WEBAPP_URL + '?url=' + encodeURIComponent(eventUrl)
+    : MEETUP_WEBAPP_URL;
 }
