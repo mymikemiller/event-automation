@@ -341,6 +341,11 @@
         <input type="text" id="f-link-label">
       </div>
       <div class="field-group">
+        <label for="f-source-url">Event Link</label>
+        <input type="url" id="f-source-url"
+               inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
+      </div>
+      <div class="field-group">
         <label for="f-image-url">Image URL</label>
         <input type="url" id="f-image-url" oninput="queueImagePreview()"
                inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
@@ -720,6 +725,7 @@
           .withSuccessHandler(function (link) {
             if (!link) return;
             sourceUrl = link.url;
+            document.getElementById('f-source-url').value = link.url;
             document.getElementById('f-link-label').value = link.label;
           })
           .chooseEventLink(urls);
@@ -754,6 +760,10 @@
       document.getElementById('f-location').value = data.location || '';
       document.getElementById('f-description').value = data.description || '';
       document.getElementById('f-link-label').value = data.source_link_label || 'See Website for details';
+      // Whatever the source URL resolved to — the pasted URL, or the link
+      // decoded from a QR code, which replaced it. Editable because a flyer can
+      // carry a code that is wrong, expired, or simply not the one you want.
+      document.getElementById('f-source-url').value = sourceUrl;
       document.getElementById('f-image-url').value = data.image_url || '';
       updateImagePreview();
 
@@ -815,7 +825,7 @@
         description: document.getElementById('f-description').value.trim(),
         source_link_label: document.getElementById('f-link-label').value.trim(),
         image_url: document.getElementById('f-image-url').value.trim(),
-        source_url: sourceUrl
+        source_url: document.getElementById('f-source-url').value.trim()
       };
 
       google.script.run
@@ -982,6 +992,7 @@
       document.getElementById('paste-input').value = '';
       document.getElementById('result-title').style.display = 'none';
       document.getElementById('date-rows').innerHTML = '';
+      document.getElementById('f-source-url').value = '';
       document.getElementById('recurrence-banner').textContent = '';
       document.getElementById('recurrence-banner').className = 'rec-banner';
       sourceUrl = '';
