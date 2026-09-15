@@ -174,6 +174,28 @@ function test_extractionIsEmpty() {
   Logger.log('test_extractionIsEmpty: ALL PASSED');
 }
 
+function test_fetchRenderedPage_live() {
+  var text = fetchRenderedPage_('https://peoplesanctuary.org/spooky-saturday');
+  if (!text) throw new Error('the rendering proxy returned nothing');
+  if (text.indexOf('Spooky Sober Saturday') < 0) throw new Error('no title in: ' + text.slice(0, 200));
+  if (text.indexOf('Tudor Cottage') < 0) throw new Error('no venue');
+  if (text.indexOf('4:30 PM') < 0) throw new Error('no start time');
+  Logger.log('test_fetchRenderedPage_live: ALL PASSED — ' + text.length + ' chars');
+}
+
+function test_extractSpaPage_live() {
+  var r = extractEventData('https://peoplesanctuary.org/spooky-saturday');
+  if (r.error) throw new Error(r.error);
+  var d = r.data;
+  if (!/Spooky Sober Saturday/i.test(d.title)) throw new Error('title: ' + d.title);
+  if (d.date !== '2026-10-31') throw new Error('date: ' + d.date);
+  if (d.start_time !== '16:30') throw new Error('start_time: ' + d.start_time);
+  if (!/Tudor Cottage|Pease Park/i.test(d.location || '')) throw new Error('location: ' + d.location);
+  if (!d.description) throw new Error('no description');
+  Logger.log('test_extractSpaPage_live: ALL PASSED — ' + d.title + ' / ' + d.date +
+             ' ' + d.start_time + ' / ' + d.location);
+}
+
 var CLAUDE_MODEL = 'claude-sonnet-4-6';
 var CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 
@@ -319,12 +341,27 @@ function extractEventData(url) {
   // JSON full of nulls — so this is caught here rather than left to look like a
   // successful extraction of an event called "Unknown".
   if (pageHasNoContent_(html)) {
-    return {
-      error: 'This site builds its pages in the browser, so there is nothing in the ' +
-             'page source to read. Paste the event text instead.',
-      allowPaste: true,
-      originalUrl: url
-    };
+    var rendered = fetchRenderedPage_(url);
+    if (!rendered) {
+      return {
+        error: 'This site builds its pages in the browser, so there is nothing in the ' +
+               'page source to read, and it could not be rendered. Paste the event text instead.',
+        allowPaste: true,
+        originalUrl: url
+      };
+    }
+
+    var spaContent = renderedContentForClaude_(rendered, url);
+    var spaResult = callClaude_(spaContent, false);
+    if (spaResult === null) spaResult = callClaude_(spaContent, true);
+    if (extractionIsEmpty_(spaResult)) {
+      return {
+        error: 'Could not find an event on this page. Paste the event text instead.',
+        allowPaste: true,
+        originalUrl: url
+      };
+    }
+    return { data: spaResult };
   }
 
   // Extract JSON-LD structured data before stripping scripts — event sites like Luma
@@ -407,6 +444,61 @@ function extractEventData(url) {
   }
 
   return { data: result };
+}
+
+// Renders a page and returns it as markdown. Reached only when a plain fetch
+// produced a contentless shell.
+var RENDER_PROXY_URL = 'https://r.jina.ai/';
+
+// Below this the proxy answered but rendered nothing worth reading — an error
+// page of its own, or a rate-limit notice.
+var RENDER_PROXY_MIN_CHARS = 200;
+
+/**
+ * A client-side-rendered page as text, or null if it cannot be had.
+ *
+ * Measured 2026-09-15 against peoplesanctuary.org/spooky-saturday: 943 bytes in
+ * about 4 seconds, carrying the title, the date, both times, the venue and the
+ * street address — more than reading the JavaScript bundle yields, since that
+ * holds every route's text interleaved and keeps some of it in nested arrays
+ * the obvious extraction misses.
+ *
+ * Never throws. Null is the caller's signal to fall back to pasting, which is
+ * also what a rate-limited proxy produces — this is a free service with no SLA,
+ * so that path is expected rather than exceptional.
+ *
+ * @param {string} url
+ * @returns {string|null}
+ */
+function fetchRenderedPage_(url) {
+  try {
+    var resp = UrlFetchApp.fetch(RENDER_PROXY_URL + url, {
+      muteHttpExceptions: true,
+      followRedirects: true
+    });
+    if (resp.getResponseCode() !== 200) {
+      Logger.log('fetchRenderedPage_: HTTP ' + resp.getResponseCode());
+      return null;
+    }
+    var text = resp.getContentText();
+    if (!text || text.length < RENDER_PROXY_MIN_CHARS) {
+      Logger.log('fetchRenderedPage_: rendered only ' + (text ? text.length : 0) + ' chars');
+      return null;
+    }
+    return text;
+  } catch (e) {
+    Logger.log('fetchRenderedPage_ error: ' + e.message);
+    return null;
+  }
+}
+
+/** Wraps rendered markdown for Claude, which is otherwise told it is reading HTML. */
+function renderedContentForClaude_(text, url) {
+  return '=== RENDERED PAGE CONTENT (markdown) ===\n' +
+         'This page is built in the browser, so this is its rendered text rather than its\n' +
+         'HTML source. Treat it as the full page. Source URL: ' + url + '\n\n' +
+         text.substring(0, 30000) +
+         '\n=== END RENDERED PAGE CONTENT ===';
 }
 
 /** Placeholder titles a model reaches for when a page said nothing. */
