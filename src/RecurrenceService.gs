@@ -255,6 +255,40 @@ function test_summarizePlan() {
   Logger.log('test_summarizePlan: ALL PASSED');
 }
 
+function test_expandRuleMultiByDay() {
+  // 2nd and 4th Saturday: Sep 2026 has Saturdays on 5, 12, 19, 26.
+  var out = expandRule_('RRULE:FREQ=MONTHLY;BYDAY=2SA,4SA', '2026-09-12', 5);
+  var want = ['2026-09-12', '2026-09-26', '2026-10-10', '2026-10-24', '2026-11-14'];
+  if (out.join(',') !== want.join(',')) throw new Error('got ' + out.join(','));
+
+  // Anchored mid-month: candidates before the start date are skipped rather
+  // than emitted — the 2nd Saturday of September has already gone.
+  var later = expandRule_('RRULE:FREQ=MONTHLY;BYDAY=2SA,4SA', '2026-09-26', 3);
+  if (later[0] !== '2026-09-26') throw new Error('first: ' + later[0]);
+  if (later[1] !== '2026-10-10') throw new Error('second: ' + later[1]);
+
+  // The single-BYDAY path the fitted rules use must be unchanged.
+  var single = expandRule_('RRULE:FREQ=MONTHLY;BYDAY=2TU;COUNT=3', '2026-08-11', 3);
+  if (single.join(',') !== '2026-08-11,2026-09-08,2026-10-13') throw new Error('single: ' + single.join(','));
+
+  Logger.log('test_expandRuleMultiByDay: ALL PASSED');
+}
+
+function test_describeCadenceMultiByDay() {
+  var d = describeCadence_('FREQ=MONTHLY;BYDAY=2SA,4SA');
+  if (d !== 'every month on the second and fourth Saturday') throw new Error(d);
+
+  // Unchanged for the rules fitRule_ produces.
+  if (describeCadence_('RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=4') !== 'every week on Monday') {
+    throw new Error('weekly wording changed');
+  }
+  if (describeCadence_('RRULE:FREQ=MONTHLY;BYDAY=2TU;COUNT=3') !== 'every month on the second Tuesday') {
+    throw new Error('single monthly wording changed');
+  }
+
+  Logger.log('test_describeCadenceMultiByDay: ALL PASSED');
+}
+
 var DOW_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 var MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -303,6 +337,30 @@ function exactDayOfMonth_(y, m, dom) {
 function nthWeekdayOfMonth_(y, m, ord, dow) {
   var first = new Date(Date.UTC(y, m, 1)).getUTCDay();
   return exactDayOfMonth_(y, m, 1 + ((dow - first + 7) % 7) + (ord - 1) * 7);
+}
+
+/**
+ * BYDAY as a list: [{ord, dow}], where ord 0 means "no ordinal given".
+ *
+ * Replaces a single-weekday regex. `BYDAY=2SA,4SA` read through
+ * /BYDAY=(\d*)([A-Z]{2})/ matches `2SA` alone — a rule that looks right and
+ * silently drops half its occurrences.
+ * @param {string} rule
+ * @returns {Array<{ord:number, dow:number}>}
+ */
+function parseByDay_(rule) {
+  var m = rule.match(/BYDAY=([0-9A-Z,\-]+)/);
+  if (!m) return [];
+  var out = [];
+  var tokens = m[1].split(',');
+  for (var i = 0; i < tokens.length; i++) {
+    var t = /^(-?\d*)([A-Z]{2})$/.exec(tokens[i]);
+    if (!t) continue;
+    var dow = DOW_CODES.indexOf(t[2]);
+    if (dow < 0) continue;
+    out.push({ ord: t[1] ? +t[1] : 0, dow: dow });
+  }
+  return out;
 }
 
 /**
@@ -437,7 +495,6 @@ function fitMonthlyByWeekday_(dates) {
 function expandRule_(rule, startYmd, n) {
   var freq = (rule.match(/FREQ=([A-Z]+)/) || [])[1];
   var interval = +((rule.match(/INTERVAL=(\d+)/) || [])[1] || 1);
-  var byday = rule.match(/BYDAY=(\d*)([A-Z]{2})/);
   var out = [];
 
   if (freq === 'DAILY' || freq === 'WEEKLY') {
@@ -453,12 +510,26 @@ function expandRule_(rule, startYmd, n) {
     var y = +p[0];
     var m = +p[1] - 1;
     var dom = +p[2];
+    var byd = parseByDay_(rule);
     var guard = 0;
     while (out.length < n && guard++ < 600) {
-      var cand = (byday && byday[1])
-        ? nthWeekdayOfMonth_(y, m, +byday[1], DOW_CODES.indexOf(byday[2]))
-        : exactDayOfMonth_(y, m, dom);
-      if (cand) out.push(cand);
+      var cands = [];
+      if (byd.length) {
+        for (var b = 0; b < byd.length; b++) {
+          var hit = byd[b].ord ? nthWeekdayOfMonth_(y, m, byd[b].ord, byd[b].dow) : null;
+          if (hit) cands.push(hit);
+        }
+        cands.sort();
+      } else {
+        var exact = exactDayOfMonth_(y, m, dom);
+        if (exact) cands.push(exact);
+      }
+      for (var c = 0; c < cands.length && out.length < n; c++) {
+        // A rule anchored mid-month starts at its DTSTART, not at the month's
+        // first candidate — an earlier one has already happened. Harmless for a
+        // single-BYDAY rule, where DTSTART is the only candidate anyway.
+        if (cands[c] >= startYmd) out.push(cands[c]);
+      }
       m += interval;
       y += Math.floor(m / 12);
       m = ((m % 12) + 12) % 12;
@@ -577,16 +648,25 @@ function formatTime12_(t) {
 function describeCadence_(rule) {
   var freq = (rule.match(/FREQ=([A-Z]+)/) || [])[1];
   var interval = +((rule.match(/INTERVAL=(\d+)/) || [])[1] || 1);
-  var byday = rule.match(/BYDAY=(\d*)([A-Z]{2})/);
+  var byd = parseByDay_(rule);
   var unit = { DAILY: 'day', WEEKLY: 'week', MONTHLY: 'month' }[freq] || 'time';
   var every = interval === 1 ? 'every ' + unit : 'every ' + interval + ' ' + unit + 's';
 
-  if (freq === 'WEEKLY' && byday) {
-    return every + ' on ' + DAY_NAMES_FULL[DOW_CODES.indexOf(byday[2])];
+  if (freq === 'WEEKLY' && byd.length) {
+    return every + ' on ' + DAY_NAMES_FULL[byd[0].dow];
   }
-  if (freq === 'MONTHLY' && byday && byday[1]) {
-    var ordinals = ['', 'first', 'second', 'third', 'fourth'];
-    return every + ' on the ' + ordinals[+byday[1]] + ' ' + DAY_NAMES_FULL[DOW_CODES.indexOf(byday[2])];
+  if (freq === 'MONTHLY' && byd.length && byd[0].ord) {
+    var ordinals = ['', 'first', 'second', 'third', 'fourth', 'fifth'];
+    // "second and fourth Saturday" rather than "second Saturday and fourth
+    // Saturday" when every entry names the same weekday — the common case.
+    var sameDow = byd.every(function (b) { return b.dow === byd[0].dow; });
+    var parts = byd.map(function (b) {
+      return ordinals[b.ord] + (sameDow ? '' : ' ' + DAY_NAMES_FULL[b.dow]);
+    });
+    var joined = parts.length > 1
+      ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1]
+      : parts[0];
+    return every + ' on the ' + joined + (sameDow ? ' ' + DAY_NAMES_FULL[byd[0].dow] : '');
   }
   return every;
 }
