@@ -117,6 +117,63 @@ function test_extractFlyerImage_live() {
              d.occurrences[0].date + ' / ' + d.recurrence_rule);
 }
 
+function test_pageHasNoContent() {
+  // The shape peoplesanctuary.org serves: a Vite/React bootstrap shell. Empty
+  // title, no og: tags, no JSON-LD, and an empty #root — 7944 bytes of which
+  // not one character is visible text.
+  var shell = '<!doctype html><html><head><meta charset="UTF-8"/>' +
+    '<meta name="generator" content="Hostinger Horizons"/><title></title>' +
+    '<script type="module" crossorigin src="/assets/index-DwaeBoCi.js"><\/script>' +
+    '<script>window.onerror=(m,s,l,c,e)=>{window.parent.postMessage({type:"horizons-runtime-error"},"*")};<\/script>' +
+    '<style>.x{color:red}<\/style></head><body><div id="root"></div></body></html>';
+  if (!pageHasNoContent_(shell)) throw new Error('an empty SPA shell must be detected');
+
+  // A page with real text is not a shell, even without og: or JSON-LD.
+  var real = '<html><head><title>Spooky Saturday</title></head><body>' +
+    '<h1>Spooky Sober Saturday</h1><p>Join us on October 31st, 2026 at Tudor ' +
+    'Cottage and Terrace in Pease Park, Austin TX for a costume-friendly, ' +
+    'substance-free evening of community, music and good company. Yoga starts ' +
+    'at 4:30 PM and mingling runs from 5 to 8:30 PM. Tickets are $25 each.</p></body></html>';
+  if (pageHasNoContent_(real)) throw new Error('a page with visible text is not a shell');
+
+  // Any one real signal is enough to keep a sparse page out of the fallback.
+  var sparseButStructured = '<html><head><title></title>' +
+    '<script type="application/ld+json">{"@type":"Event"}<\/script></head>' +
+    '<body><div id="root"></div></body></html>';
+  if (pageHasNoContent_(sparseButStructured)) throw new Error('JSON-LD means there is something to read');
+
+  var sparseButTagged = '<html><head><title></title>' +
+    '<meta property="og:title" content="Spooky Sober Saturday"/></head>' +
+    '<body><div id="root"></div></body></html>';
+  if (pageHasNoContent_(sparseButTagged)) throw new Error('og: tags mean there is something to read');
+
+  var sparseButTitled = '<html><head><title>Spooky Sober Saturday</title></head>' +
+    '<body><div id="root"></div></body></html>';
+  if (pageHasNoContent_(sparseButTitled)) throw new Error('a real title means there is something to read');
+
+  Logger.log('test_pageHasNoContent: ALL PASSED');
+}
+
+function test_extractionIsEmpty() {
+  // What Claude actually returned for the SPA shell: valid JSON, no event.
+  if (!extractionIsEmpty_({ title: 'Unknown', date: '2026-09-15', start_time: '00:00',
+                            location: null, description: null })) {
+    throw new Error('a placeholder title is not an extraction');
+  }
+  if (!extractionIsEmpty_({ title: '', date: '2026-10-31' })) throw new Error('no title');
+  if (!extractionIsEmpty_({ title: 'Spooky Sober Saturday', date: null })) throw new Error('no date');
+  if (!extractionIsEmpty_(null)) throw new Error('null is empty');
+
+  // A real extraction with optional fields missing is still a real extraction —
+  // the UI already warns about those, and must not lose them to the paste flow.
+  if (extractionIsEmpty_({ title: 'Spooky Sober Saturday', date: '2026-10-31',
+                           location: null, description: null })) {
+    throw new Error('a title and a date are enough');
+  }
+
+  Logger.log('test_extractionIsEmpty: ALL PASSED');
+}
+
 var CLAUDE_MODEL = 'claude-sonnet-4-6';
 var CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 
@@ -257,6 +314,19 @@ function extractEventData(url) {
 
   var html = response.getContentText();
 
+  // A client-side-rendered site answers with a bootstrap shell and keeps its
+  // content in JavaScript. Claude does not fail on one — it returns well-formed
+  // JSON full of nulls — so this is caught here rather than left to look like a
+  // successful extraction of an event called "Unknown".
+  if (pageHasNoContent_(html)) {
+    return {
+      error: 'This site builds its pages in the browser, so there is nothing in the ' +
+             'page source to read. Paste the event text instead.',
+      allowPaste: true,
+      originalUrl: url
+    };
+  }
+
   // Extract JSON-LD structured data before stripping scripts — event sites like Luma
   // embed authoritative date/time here and it's the most reliable source.
   var jsonLdBlocks = [];
@@ -311,7 +381,22 @@ function extractEventData(url) {
     result = callClaude_(cleaned, true);
   }
   if (result === null) {
-    return { error: 'Could not extract event data from this page. Please try a different URL or fill in the fields manually.' };
+    return {
+      error: 'Could not extract event data from this page.',
+      allowPaste: true,
+      originalUrl: url
+    };
+  }
+
+  // Parseable is not the same as successful: a page that says nothing about an
+  // event comes back as valid JSON with a placeholder title and today's date.
+  if (extractionIsEmpty_(result)) {
+    return {
+      error: 'Could not find an event on this page — no title or date came back. ' +
+             'Paste the event text instead.',
+      allowPaste: true,
+      originalUrl: url
+    };
   }
 
   // Meetup only surfaces square/small crops in og:image and JSON-LD, so Claude
@@ -322,6 +407,71 @@ function extractEventData(url) {
   }
 
   return { data: result };
+}
+
+/** Placeholder titles a model reaches for when a page said nothing. */
+var EMPTY_TITLE_RE = /^(unknown|untitled|none|n\/?a|event)$/i;
+
+// A shell with a trace of static chrome is still a shell. Every real event page
+// measured clears this by an order of magnitude; the ones that do not clear it
+// have og: tags, JSON-LD or a title, any one of which exempts them.
+var SHELL_MAX_VISIBLE_CHARS = 200;
+
+/**
+ * Whether a page served nothing a reader could see.
+ *
+ * A client-side-rendered site answers a plain fetch with a bootstrap shell: an
+ * empty `#root`, and the content only in its JavaScript. Measured 2026-09-15,
+ * peoplesanctuary.org returns 7944 bytes containing **zero** visible
+ * characters, no og: tags, no JSON-LD and an empty <title> — where
+ * meetup.com/vegaustin/events has 701 visible characters, 6 og: tags and
+ * JSON-LD, and lu.ma/discover has 2669 and 9.
+ *
+ * All four signals must be absent together. Any one of them means there is
+ * something on the page worth sending to Claude, and a page with real text is
+ * never rerouted however sparse its markup.
+ *
+ * @param {string} html - the raw page
+ * @returns {boolean}
+ */
+function pageHasNoContent_(html) {
+  if (/ld\+json/i.test(html)) return false;
+  if (/property=["']og:/i.test(html)) return false;
+
+  var title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '';
+  if (title.trim()) return false;
+
+  var visible = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&[a-z#0-9]+;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return visible.length < SHELL_MAX_VISIBLE_CHARS;
+}
+
+/**
+ * Whether an extraction found no event, whatever its JSON said.
+ *
+ * Claude answers a contentless page with well-formed JSON full of nulls and a
+ * placeholder title rather than with nothing at all — so parseability is not
+ * the same as success, and treating it as success put a form titled "Unknown",
+ * dated today at 00:00, in front of the user with no way back to the paste flow.
+ *
+ * Only title and date are required. Location, description and image are
+ * genuinely optional and the confirmation screen already warns about them;
+ * demanding them here would send real events to the paste flow.
+ *
+ * @param {Object|null} result
+ * @returns {boolean}
+ */
+function extractionIsEmpty_(result) {
+  if (!result) return true;
+  var title = String(result.title || '').trim();
+  if (!title || EMPTY_TITLE_RE.test(title)) return true;
+  return !String(result.date || '').trim();
 }
 
 var FLYER_PREAMBLE =
