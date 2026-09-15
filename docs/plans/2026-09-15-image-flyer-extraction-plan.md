@@ -1197,8 +1197,10 @@ In `submitEvent`, the same two lines, replacing:
 
 `planRecurrence_` is exercised by `node tests/run.js Utilities.gs RecurrenceService.gs`; these two call sites are `Calendar`/`Drive`-bound and are verified by the live submit in Task 12.
 
-Run: `node tests/run.js Utilities.gs RecurrenceService.gs CalendarService.gs`
-Expected: all PASS (`CalendarService.gs` contributes only its pure tests).
+Run: `node tests/run.js Utilities.gs RecurrenceService.gs`
+Expected: all PASS.
+
+Do **not** load `CalendarService.gs` into the pure runner: `test_createAndDeleteEvent` and `test_duplicateDetection` are editor-only but carry no `_live` suffix, so the runner picks them up and they fail on `PropertiesService is not defined`. Pre-existing, and the shim cannot help — it provides `PropertiesService` but not `Calendar` or `DriveApp`.
 
 **Step 4: Commit**
 
@@ -1460,7 +1462,8 @@ Also add a short **Running the tests** note if none exists:
 
 ```
 node tests/run.js Utilities.gs RecurrenceService.gs QrService.gs   # pure, no network
-node tests/run-live.js QrService.gs Extraction.gs     # real services, needs the Claude key
+node tests/run-live.js Utilities.gs RecurrenceService.gs QrService.gs \
+  FacebookService.gs InstagramService.gs Extraction.gs   # real services, needs the Claude key
 ```
 
 **Commit:**
@@ -1477,8 +1480,9 @@ git commit -m "docs: record image flyer extraction"
 **Step 1: Full local suite**
 
 ```bash
-node tests/run.js Utilities.gs RecurrenceService.gs QrService.gs Extraction.gs CalendarService.gs TockifyUtil.gs
-node tests/run-live.js QrService.gs Extraction.gs
+node tests/run.js Utilities.gs RecurrenceService.gs QrService.gs Extraction.gs TockifyUtil.gs
+node tests/run-live.js Utilities.gs RecurrenceService.gs QrService.gs \
+  FacebookService.gs InstagramService.gs Extraction.gs
 ```
 
 Expected: `0 failed` from both. Paste the real output into the PR — @superpowers:verification-before-completion.

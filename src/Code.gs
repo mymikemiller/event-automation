@@ -91,8 +91,10 @@ function submitEvent(eventData) {
     : [{ date: eventData.date, start_time: eventData.start_time, end_time: eventData.end_time }];
 
   // Re-plan server-side. The UI's banner is only a preview; this is what runs.
-  var plan = planRecurrence_(occurrences, Session.getScriptTimeZone());
+  var plan = planRecurrence_(occurrences, Session.getScriptTimeZone(),
+                             eventData.recurrence_rule || null, eventData.recurrence_ends || null);
   if (plan.method === 'none') return { error: 'Please provide at least one valid date.' };
+  if (plan.method === 'invalid') return { error: plan.summary };
 
   var dates = plan.dates.map(function (o) { return o.date; });
 
@@ -124,6 +126,8 @@ function submitEvent(eventData) {
   var calResult = createCalendarEvent({
     title: eventData.title,
     occurrences: occurrences,
+    recurrence_rule: eventData.recurrence_rule || null,
+    recurrence_ends: eventData.recurrence_ends || null,
     location: eventData.location,
     description: fullDescription
   });
@@ -193,6 +197,7 @@ function submitEvent(eventData) {
   return {
     success: true,
     method: calResult.method,
+    openEnded: calResult.openEnded || false,
     occurrenceCount: calResult.occurrenceCount,
     dates: dates,
     duplicateDates: duplicateDates,
