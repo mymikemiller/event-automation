@@ -255,6 +255,122 @@ function test_summarizePlan() {
   Logger.log('test_summarizePlan: ALL PASSED');
 }
 
+function test_expandRuleMultiByDay() {
+  // 2nd and 4th Saturday: Sep 2026 has Saturdays on 5, 12, 19, 26.
+  var out = expandRule_('RRULE:FREQ=MONTHLY;BYDAY=2SA,4SA', '2026-09-12', 5);
+  var want = ['2026-09-12', '2026-09-26', '2026-10-10', '2026-10-24', '2026-11-14'];
+  if (out.join(',') !== want.join(',')) throw new Error('got ' + out.join(','));
+
+  // Anchored mid-month: candidates before the start date are skipped rather
+  // than emitted — the 2nd Saturday of September has already gone.
+  var later = expandRule_('RRULE:FREQ=MONTHLY;BYDAY=2SA,4SA', '2026-09-26', 3);
+  if (later[0] !== '2026-09-26') throw new Error('first: ' + later[0]);
+  if (later[1] !== '2026-10-10') throw new Error('second: ' + later[1]);
+
+  // The single-BYDAY path the fitted rules use must be unchanged.
+  var single = expandRule_('RRULE:FREQ=MONTHLY;BYDAY=2TU;COUNT=3', '2026-08-11', 3);
+  if (single.join(',') !== '2026-08-11,2026-09-08,2026-10-13') throw new Error('single: ' + single.join(','));
+
+  Logger.log('test_expandRuleMultiByDay: ALL PASSED');
+}
+
+function test_describeCadenceMultiByDay() {
+  var d = describeCadence_('FREQ=MONTHLY;BYDAY=2SA,4SA');
+  if (d !== 'every month on the second and fourth Saturday') throw new Error(d);
+
+  // Unchanged for the rules fitRule_ produces.
+  if (describeCadence_('RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=4') !== 'every week on Monday') {
+    throw new Error('weekly wording changed');
+  }
+  if (describeCadence_('RRULE:FREQ=MONTHLY;BYDAY=2TU;COUNT=3') !== 'every month on the second Tuesday') {
+    throw new Error('single monthly wording changed');
+  }
+
+  Logger.log('test_describeCadenceMultiByDay: ALL PASSED');
+}
+
+function test_nextOccurrencesAndFit() {
+  // From Tue 2026-09-15 the 2nd Saturday (Sep 12) has passed; Sep 26 is next.
+  var next = nextOccurrences_('FREQ=MONTHLY;BYDAY=2SA,4SA', '2026-09-15', 3);
+  if (next.join(',') !== '2026-09-26,2026-10-10,2026-10-24') throw new Error('got ' + next.join(','));
+
+  if (!dateFitsRule_('2026-09-26', 'FREQ=MONTHLY;BYDAY=2SA,4SA')) throw new Error('Sep 26 is the 4th Saturday');
+  if (!dateFitsRule_('2026-10-10', 'FREQ=MONTHLY;BYDAY=2SA,4SA')) throw new Error('Oct 10 is the 2nd Saturday');
+  if (dateFitsRule_('2026-10-03', 'FREQ=MONTHLY;BYDAY=2SA,4SA')) throw new Error('Oct 3 is the 1st Saturday');
+  if (dateFitsRule_('2026-10-12', 'FREQ=MONTHLY;BYDAY=2SA,4SA')) throw new Error('Oct 12 is a Monday');
+
+  // Interval alignment is deliberately NOT checked: the rule carries no anchor,
+  // so whichever date is picked becomes DTSTART and defines the phase.
+  if (!dateFitsRule_('2026-11-14', 'FREQ=MONTHLY;INTERVAL=2;BYDAY=2SA')) throw new Error('any 2nd Saturday anchors');
+
+  if (!dateFitsRule_('2026-09-16', 'FREQ=WEEKLY;BYDAY=WE')) throw new Error('Sep 16 is a Wednesday');
+  if (dateFitsRule_('2026-09-16', 'FREQ=WEEKLY;BYDAY=TH')) throw new Error('Sep 16 is not a Thursday');
+  if (!dateFitsRule_('2026-09-16', 'FREQ=DAILY')) throw new Error('daily fits any date');
+  if (!dateFitsRule_('2026-09-15', 'FREQ=MONTHLY;BYMONTHDAY=15')) throw new Error('BYMONTHDAY=15');
+  if (dateFitsRule_('2026-09-16', 'FREQ=MONTHLY;BYMONTHDAY=15')) throw new Error('Sep 16 is not the 15th');
+
+  var msg = describeDateMismatch_('2026-10-03', 'FREQ=MONTHLY;BYDAY=2SA,4SA');
+  if (msg.indexOf('first Saturday') < 0) throw new Error('should name the ordinal: ' + msg);
+  if (msg.indexOf('second and fourth Saturday') < 0) throw new Error('should name the rule: ' + msg);
+
+  Logger.log('test_nextOccurrencesAndFit: ALL PASSED');
+}
+
+function test_planRecurrenceOpenEnded() {
+  var occ = [{ date: '2026-09-26', start_time: '19:00', end_time: '21:00' }];
+  var rule = 'FREQ=MONTHLY;BYDAY=2SA,4SA';
+
+  var plan = planRecurrence_(occ, 'America/Chicago', rule, null);
+  if (plan.method !== 'rrule') throw new Error('method: ' + plan.method);
+  if (!plan.openEnded) throw new Error('should be open-ended');
+  if (plan.recurrence[0] !== 'RRULE:FREQ=MONTHLY;BYDAY=2SA,4SA') throw new Error('rule: ' + plan.recurrence[0]);
+  if (/COUNT|UNTIL/.test(plan.recurrence[0])) throw new Error('open-ended rule must not terminate');
+  // Only the real start date reaches the caller — no invented date leaks into
+  // the duplicate check, the Drive filename or the Tockify start.
+  if (plan.dates.length !== 1 || plan.dates[0].date !== '2026-09-26') {
+    throw new Error('dates: ' + JSON.stringify(plan.dates));
+  }
+  if (plan.previewDates[1] !== '2026-10-10') throw new Error('preview: ' + plan.previewDates.join(','));
+  if (plan.summary.indexOf('second and fourth Saturday') < 0) throw new Error('summary: ' + plan.summary);
+  if (!/no end date/i.test(plan.summary)) throw new Error('summary should say it never ends: ' + plan.summary);
+
+  // Capped by count.
+  var capped = planRecurrence_(occ, 'America/Chicago', rule, { mode: 'count', count: 6 });
+  if (capped.recurrence[0].indexOf(';COUNT=6') < 0) throw new Error('count cap: ' + capped.recurrence[0]);
+  if (capped.openEnded) throw new Error('a capped series is not open-ended');
+
+  // A cap past the preview window still reports its real last date.
+  var long = planRecurrence_(occ, 'America/Chicago', rule, { mode: 'count', count: 12 });
+  if (long.summary.indexOf('Mar 13, 2027') < 0) throw new Error('long cap end: ' + long.summary);
+
+  // Capped by date, converted to COUNT — never UNTIL.
+  var until = planRecurrence_(occ, 'America/Chicago', rule, { mode: 'until', date: '2026-11-30' });
+  if (until.recurrence[0] !== 'RRULE:FREQ=MONTHLY;BYDAY=2SA,4SA;COUNT=5') {
+    throw new Error('until cap: ' + until.recurrence[0]);
+  }
+  if (/UNTIL/.test(until.recurrence[0])) throw new Error('UNTIL must never be emitted');
+
+  // An end date before the first occurrence is rejected, not silently emptied.
+  var tooSoon = planRecurrence_(occ, 'America/Chicago', rule, { mode: 'until', date: '2026-09-01' });
+  if (tooSoon.method !== 'invalid') throw new Error('too-soon end: ' + tooSoon.method);
+
+  // A start date that does not fit is rejected with a readable reason.
+  var bad = planRecurrence_([{ date: '2026-10-03', start_time: '19:00', end_time: '21:00' }],
+                            'America/Chicago', rule, null);
+  if (bad.method !== 'invalid') throw new Error('method: ' + bad.method);
+  if (bad.summary.indexOf('first Saturday') < 0) throw new Error('reason: ' + bad.summary);
+
+  // No rule: every existing path is untouched.
+  var plain = planRecurrence_([
+    { date: '2026-08-10', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-17', start_time: '19:00', end_time: '20:00' }
+  ], 'America/Chicago', null, null);
+  if (plain.method !== 'rrule' || plain.openEnded) throw new Error('fitted path changed: ' + JSON.stringify(plain));
+  if (plain.recurrence[0].indexOf('COUNT=2') < 0) throw new Error('fitted rules still use COUNT');
+
+  Logger.log('test_planRecurrenceOpenEnded: ALL PASSED');
+}
+
 var DOW_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 var MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -303,6 +419,30 @@ function exactDayOfMonth_(y, m, dom) {
 function nthWeekdayOfMonth_(y, m, ord, dow) {
   var first = new Date(Date.UTC(y, m, 1)).getUTCDay();
   return exactDayOfMonth_(y, m, 1 + ((dow - first + 7) % 7) + (ord - 1) * 7);
+}
+
+/**
+ * BYDAY as a list: [{ord, dow}], where ord 0 means "no ordinal given".
+ *
+ * Replaces a single-weekday regex. `BYDAY=2SA,4SA` read through
+ * /BYDAY=(\d*)([A-Z]{2})/ matches `2SA` alone — a rule that looks right and
+ * silently drops half its occurrences.
+ * @param {string} rule
+ * @returns {Array<{ord:number, dow:number}>}
+ */
+function parseByDay_(rule) {
+  var m = rule.match(/BYDAY=([0-9A-Z,\-]+)/);
+  if (!m) return [];
+  var out = [];
+  var tokens = m[1].split(',');
+  for (var i = 0; i < tokens.length; i++) {
+    var t = /^(-?\d*)([A-Z]{2})$/.exec(tokens[i]);
+    if (!t) continue;
+    var dow = DOW_CODES.indexOf(t[2]);
+    if (dow < 0) continue;
+    out.push({ ord: t[1] ? +t[1] : 0, dow: dow });
+  }
+  return out;
 }
 
 /**
@@ -437,7 +577,6 @@ function fitMonthlyByWeekday_(dates) {
 function expandRule_(rule, startYmd, n) {
   var freq = (rule.match(/FREQ=([A-Z]+)/) || [])[1];
   var interval = +((rule.match(/INTERVAL=(\d+)/) || [])[1] || 1);
-  var byday = rule.match(/BYDAY=(\d*)([A-Z]{2})/);
   var out = [];
 
   if (freq === 'DAILY' || freq === 'WEEKLY') {
@@ -453,12 +592,26 @@ function expandRule_(rule, startYmd, n) {
     var y = +p[0];
     var m = +p[1] - 1;
     var dom = +p[2];
+    var byd = parseByDay_(rule);
     var guard = 0;
     while (out.length < n && guard++ < 600) {
-      var cand = (byday && byday[1])
-        ? nthWeekdayOfMonth_(y, m, +byday[1], DOW_CODES.indexOf(byday[2]))
-        : exactDayOfMonth_(y, m, dom);
-      if (cand) out.push(cand);
+      var cands = [];
+      if (byd.length) {
+        for (var b = 0; b < byd.length; b++) {
+          var hit = byd[b].ord ? nthWeekdayOfMonth_(y, m, byd[b].ord, byd[b].dow) : null;
+          if (hit) cands.push(hit);
+        }
+        cands.sort();
+      } else {
+        var exact = exactDayOfMonth_(y, m, dom);
+        if (exact) cands.push(exact);
+      }
+      for (var c = 0; c < cands.length && out.length < n; c++) {
+        // A rule anchored mid-month starts at its DTSTART, not at the month's
+        // first candidate — an earlier one has already happened. Harmless for a
+        // single-BYDAY rule, where DTSTART is the only candidate anyway.
+        if (cands[c] >= startYmd) out.push(cands[c]);
+      }
       m += interval;
       y += Math.floor(m / 12);
       m = ((m % 12) + 12) % 12;
@@ -469,10 +622,157 @@ function expandRule_(rule, startYmd, n) {
   return [];
 }
 
+/**
+ * The next n dates a rule generates on or after `fromYmd`.
+ *
+ * expandRule_ already skips candidates earlier than its start date, so this is
+ * simply an expansion anchored at a day rather than at a known occurrence.
+ *
+ * @param {string} rule - RRULE body, with or without the RRULE: prefix
+ * @param {string} fromYmd - inclusive lower bound, YYYY-MM-DD
+ * @param {number} n
+ * @returns {Array<string>}
+ */
+function nextOccurrences_(rule, fromYmd, n) {
+  return expandRule_(rule, fromYmd, n);
+}
+
+/**
+ * Whether a date could be the start of a series following `rule`.
+ *
+ * Checks the BYDAY / BYMONTHDAY constraint only, never interval alignment: a
+ * rule stated with no end carries no anchor, so DTSTART *is* the anchor and any
+ * date matching the weekday-and-ordinal constraint is a legitimate phase.
+ * Validating INTERVAL too would mean inventing an anchor that does not exist.
+ *
+ * @param {string} ymd - YYYY-MM-DD
+ * @param {string} rule
+ * @returns {boolean}
+ */
+function dateFitsRule_(ymd, rule) {
+  var freq = (rule.match(/FREQ=([A-Z]+)/) || [])[1];
+  var byd = parseByDay_(rule);
+
+  if (freq === 'WEEKLY') {
+    if (!byd.length) return true;
+    for (var i = 0; i < byd.length; i++) if (byd[i].dow === dowOf_(ymd)) return true;
+    return false;
+  }
+
+  if (freq === 'MONTHLY') {
+    if (byd.length) {
+      for (var j = 0; j < byd.length; j++) {
+        if (byd[j].dow === dowOf_(ymd) && (!byd[j].ord || byd[j].ord === ordinalInMonth_(ymd))) return true;
+      }
+      return false;
+    }
+    var md = (rule.match(/BYMONTHDAY=(\d+)/) || [])[1];
+    return !md || +md === dayOfMonth_(ymd);
+  }
+
+  return true; // DAILY, or a FREQ we do not constrain
+}
+
+/**
+ * Why a date does not fit a rule, in the vocabulary the source used.
+ * @param {string} ymd
+ * @param {string} rule
+ * @returns {string}
+ */
+function describeDateMismatch_(ymd, rule) {
+  var ordinals = ['', 'first', 'second', 'third', 'fourth', 'fifth'];
+  return formatDateOnly_(ymd) + ' is the ' + ordinals[ordinalInMonth_(ymd)] + ' ' +
+         DAY_NAMES_FULL[dowOf_(ymd)] + '; this repeats ' + describeCadence_(rule) + '.';
+}
+
 function sameList_(a, b) {
   if (a.length !== b.length) return false;
   for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
+}
+
+var RULE_MAX_EXPANSION = 400;
+var RULE_PREVIEW_COUNT = 6;
+
+/**
+ * A plan for a recurrence the source stated as a rule rather than as dates.
+ *
+ * Unlike a fitted rule, this one is open-ended by default. "Every 2nd and 4th
+ * Saturday every month" states no last date, so pinning a COUNT would invent an
+ * end the source never gave and the series would die silently a year on. The
+ * COUNT-always invariant still holds everywhere it earns its keep — a rule
+ * fitted from a list of dates must never outrun that list.
+ *
+ * A cap the user chooses is always expressed as COUNT, the "ends on a date"
+ * case included, so UNTIL never appears and there is no DST or timezone
+ * ambiguity about where the series stops.
+ *
+ * @param {Array} occ - normalized occurrences; occ[0] is the start
+ * @param {string} rule - RRULE body from extraction
+ * @param {{mode:string, count:number, date:string}|null} ends
+ * @returns {Object|null} a plan, or null to fall through to the fitted path
+ */
+function statedRulePlan_(occ, rule, ends) {
+  var clean = String(rule).replace(/^RRULE:/, '').replace(/;?(COUNT|UNTIL)=[^;]*/g, '');
+  if (!/FREQ=(DAILY|WEEKLY|MONTHLY)/.test(clean)) return null;
+
+  var start = occ[0];
+  if (!dateFitsRule_(start.date, clean)) {
+    return invalidRulePlan_(describeDateMismatch_(start.date, clean));
+  }
+
+  var count = 0;
+  if (ends && ends.mode === 'count' && ends.count > 0) {
+    count = Math.min(+ends.count, RULE_MAX_EXPANSION);
+  } else if (ends && ends.mode === 'until' && ends.date) {
+    count = expandRule_(clean, start.date, RULE_MAX_EXPANSION).filter(function (d) {
+      return d <= ends.date;
+    }).length;
+    if (!count) {
+      return invalidRulePlan_('That end date is before the first occurrence on ' +
+                              formatDateOnly_(start.date) + '.');
+    }
+  }
+
+  var line = 'RRULE:' + clean + (count ? ';COUNT=' + count : '');
+  var preview = expandRule_(clean, start.date, RULE_PREVIEW_COUNT);
+  // The real last date, which the preview window is too short to show once a
+  // cap runs past it.
+  var lastDate = count ? expandRule_(clean, start.date, count).pop() : null;
+
+  return {
+    method: 'rrule',
+    openEnded: !count,
+    summary: summarizeStatedRule_(clean, start, count, preview, lastDate),
+    base: { date: start.date, start_time: start.start_time, end_time: start.end_time },
+    recurrence: [line],
+    exceptions: [],
+    // Only the real start date. Everything downstream — findDuplicateDates, the
+    // Drive filename, tockifyStartMillis_ — reads plan.dates, and none of them
+    // should ever see a date the calendar has not been told about.
+    dates: [{ date: start.date, start_time: start.start_time, end_time: start.end_time,
+              isException: false }],
+    previewDates: preview
+  };
+}
+
+/** A plan the UI must refuse to submit, carrying the reason as its summary. */
+function invalidRulePlan_(reason) {
+  return { method: 'invalid', summary: reason, base: null, recurrence: null,
+           exceptions: [], dates: [], previewDates: [] };
+}
+
+/** Banner text for a stated rule. */
+function summarizeStatedRule_(rule, start, count, preview, lastDate) {
+  var head = 'Repeating event — ' + describeCadence_(rule) + ' at ' +
+             formatTime12_(start.start_time) + ', starting ' + formatDateOnly_(start.date) + '. ';
+  head += count
+    ? count + ' occurrences, ending ' + formatDateYear_(lastDate) + '.'
+    : 'No end date — it repeats indefinitely.';
+  if (preview.length > 1) {
+    head += ' Next: ' + preview.slice(0, 3).map(formatDateOnly_).join(', ') + '…';
+  }
+  return head;
 }
 
 /**
@@ -489,11 +789,16 @@ function sameList_(a, b) {
  * @returns {{method:string, summary:string, base:Object|null,
  *            recurrence:Array<string>|null, exceptions:Array, dates:Array}}
  */
-function planRecurrence_(occurrences, tz) {
+function planRecurrence_(occurrences, tz, rule, ends) {
   var occ = normalizeOccurrences_(occurrences);
   if (occ.length === 0) {
     return { method: 'none', summary: 'No valid dates yet.', base: null,
              recurrence: null, exceptions: [], dates: [] };
+  }
+
+  if (rule) {
+    var stated = statedRulePlan_(occ, rule, ends);
+    if (stated) return stated;
   }
 
   var time = modalTime_(occ);
@@ -537,8 +842,8 @@ function planRecurrence_(occurrences, tz) {
  * @param {Array} occurrences - [{date, start_time, end_time}]
  * @returns {Object} plan
  */
-function planRecurrence(occurrences) {
-  return planRecurrence_(occurrences, Session.getScriptTimeZone());
+function planRecurrence(occurrences, rule, ends) {
+  return planRecurrence_(occurrences, Session.getScriptTimeZone(), rule || null, ends || null);
 }
 
 /**
@@ -563,6 +868,14 @@ function formatDateOnly_(s) {
   var p = s.split('-');
   return MONTH_NAMES[+p[1] - 1] + ' ' + (+p[2]);
 }
+/**
+ * "Mar 13, 2027". The other formatters omit the year because a fitted series
+ * spans weeks, but a series capped by count can end years out, where a bare
+ * "ending Mar 13" says nothing about which March.
+ */
+function formatDateYear_(s) {
+  return formatDateOnly_(s) + ', ' + s.split('-')[0];
+}
 
 /** '7:00 PM' */
 function formatTime12_(t) {
@@ -577,16 +890,25 @@ function formatTime12_(t) {
 function describeCadence_(rule) {
   var freq = (rule.match(/FREQ=([A-Z]+)/) || [])[1];
   var interval = +((rule.match(/INTERVAL=(\d+)/) || [])[1] || 1);
-  var byday = rule.match(/BYDAY=(\d*)([A-Z]{2})/);
+  var byd = parseByDay_(rule);
   var unit = { DAILY: 'day', WEEKLY: 'week', MONTHLY: 'month' }[freq] || 'time';
   var every = interval === 1 ? 'every ' + unit : 'every ' + interval + ' ' + unit + 's';
 
-  if (freq === 'WEEKLY' && byday) {
-    return every + ' on ' + DAY_NAMES_FULL[DOW_CODES.indexOf(byday[2])];
+  if (freq === 'WEEKLY' && byd.length) {
+    return every + ' on ' + DAY_NAMES_FULL[byd[0].dow];
   }
-  if (freq === 'MONTHLY' && byday && byday[1]) {
-    var ordinals = ['', 'first', 'second', 'third', 'fourth'];
-    return every + ' on the ' + ordinals[+byday[1]] + ' ' + DAY_NAMES_FULL[DOW_CODES.indexOf(byday[2])];
+  if (freq === 'MONTHLY' && byd.length && byd[0].ord) {
+    var ordinals = ['', 'first', 'second', 'third', 'fourth', 'fifth'];
+    // "second and fourth Saturday" rather than "second Saturday and fourth
+    // Saturday" when every entry names the same weekday — the common case.
+    var sameDow = byd.every(function (b) { return b.dow === byd[0].dow; });
+    var parts = byd.map(function (b) {
+      return ordinals[b.ord] + (sameDow ? '' : ' ' + DAY_NAMES_FULL[b.dow]);
+    });
+    var joined = parts.length > 1
+      ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1]
+      : parts[0];
+    return every + ' on the ' + joined + (sameDow ? ' ' + DAY_NAMES_FULL[byd[0].dow] : '');
   }
   return every;
 }

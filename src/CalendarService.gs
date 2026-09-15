@@ -160,8 +160,11 @@ function createCalendarEvent(eventData) {
       ? eventData.occurrences
       : [{ date: eventData.date, start_time: eventData.start_time, end_time: eventData.end_time }];
 
-    var plan = planRecurrence_(occurrences, tz);
+    var plan = planRecurrence_(occurrences, tz, eventData.recurrence_rule || null,
+                               eventData.recurrence_ends || null);
     if (plan.method === 'none') return { error: 'No valid dates to create.' };
+    // The start date does not fit the stated rule. plan.summary says why.
+    if (plan.method === 'invalid') return { error: plan.summary };
 
     var warnings = [];
 
@@ -180,6 +183,9 @@ function createCalendarEvent(eventData) {
         eventIds: [event.id],
         eventUrl: event.htmlLink,
         method: plan.method,
+        // An open-ended series has one entry in plan.dates and no count at all,
+        // so the caller must not report occurrenceCount as "1 occurrence".
+        openEnded: plan.openEnded || false,
         occurrenceCount: plan.dates.length,
         warnings: warnings
       };

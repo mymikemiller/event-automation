@@ -92,6 +92,31 @@ function test_extractEventData_live() {
   // Manually inspect output in Execution log
 }
 
+function test_extractFlyerImage_live() {
+  var url = 'https://horizons-cdn.hostinger.com/c3648fa5-28bf-4fa9-adf5-de27dbf4d0e8/sss-QlOin.png';
+  var r = extractEventData(url);
+  if (r.error) throw new Error(r.error);
+  var d = r.data;
+
+  if (!/Sober Saturday Strolls/i.test(d.title)) throw new Error('title: ' + d.title);
+  if (d.start_time !== '19:00') throw new Error('start_time: ' + d.start_time);
+  if (!/Rock|Town Lake/i.test(d.location || '')) throw new Error('location: ' + d.location);
+  if (d.source_url !== 'https://peoplesanctuary.org') throw new Error('source_url: ' + d.source_url);
+  if (d.source_link_label !== 'See Website for details') throw new Error('label: ' + d.source_link_label);
+  if (!/BYDAY=2SA,4SA/.test(d.recurrence_rule || '')) throw new Error('recurrence_rule: ' + d.recurrence_rule);
+  if (d.occurrences.length !== 1) {
+    throw new Error('a stated rule gets one occurrence, got ' + d.occurrences.length);
+  }
+  if (!dateFitsRule_(d.occurrences[0].date, d.recurrence_rule)) {
+    throw new Error('extracted date ' + d.occurrences[0].date + ' does not fit its own rule');
+  }
+  if (d.image_url !== url) throw new Error('image_url: ' + d.image_url);
+  if (d.qr_pending) throw new Error('server-side decode should have found the codes');
+
+  Logger.log('test_extractFlyerImage_live: ALL PASSED — ' + d.title + ' / ' +
+             d.occurrences[0].date + ' / ' + d.recurrence_rule);
+}
+
 var CLAUDE_MODEL = 'claude-sonnet-4-6';
 var CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 
@@ -107,6 +132,8 @@ var EXTRACTION_PROMPT = `You are extracting event details from a webpage. Return
   "location": "Full location string, or null (string|null)",
   "description": "COMPLETE event description as HTML. Copy ALL body text word-for-word — every paragraph, bullet point, and formatted text that describes the event. Do NOT use og:description or twitter:description meta tags as the source — those are truncated previews. Find the full description in the page body and copy it entirely without summarizing or omitting any text. Use only: <b>, <i>, <ul>, <li>, <a href>, <br>. Strip all other tags. Or null if no description. (string|null)",
   "image_url": "Direct URL to the main event image, or null (string|null)",
+  "recurrence_rule": "An RRULE body with NO COUNT and NO UNTIL, e.g. 'FREQ=MONTHLY;BYDAY=2SA,4SA' — ONLY when the source states a repeating pattern with no end. Otherwise null (string|null)",
+  "recurrence_note": "The source's own words for that pattern, e.g. '7pm every 2nd and 4th Saturday every month'. Null when recurrence_rule is null (string|null)",
   "source_link_label": "One of: 'RSVP on Meetup', 'RSVP on Luma', 'RSVP on Eventbrite', 'RSVP on Facebook', or 'See Website for details' (string)"
 }
 
@@ -123,7 +150,8 @@ Rules:
 - Do NOT extrapolate a recurrence beyond the dates actually shown. If the page gives both a rule ("every week on Monday until August 31") and an explicit list of dates, the explicit list wins.
 - If a recurrence is described in prose WITH a stated end date but the individual dates are not listed, expand it into explicit dates yourself and stop at the stated end. Never invent dates past it.
 - If a specific date has a different start or end time from the others, put that date's real time on its own entry. Otherwise repeat the common time on every entry.
-- Apply the nearest-future-occurrence rule to the FIRST date only, then keep dates increasing, so a list like "12/20, 1/10" rolls into the following year.`;
+- Apply the nearest-future-occurrence rule to the FIRST date only, then keep dates increasing, so a list like "12/20, 1/10" rolls into the following year.
+- recurrence_rule: set it ONLY when the source states a repeating pattern that has no stated end ("every 2nd and 4th Saturday every month", "every Tuesday"). When it is set, put exactly ONE entry in occurrences[] — the next date the pattern produces — and do not enumerate any others. A pattern WITH a stated end date is not this case: expand it into explicit dates as above and leave recurrence_rule null.`;
 
 /**
  * Fetches a URL and extracts event data using Claude.
@@ -207,17 +235,27 @@ function extractEventData(url) {
     return { data: igResult };
   }
 
-  var html;
+  var response, blob, contentType;
   try {
-    var response = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
+    response = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
     var code = response.getResponseCode();
     if (code !== 200) {
       return { error: 'Could not fetch the page (HTTP ' + code + '). It may be behind a login or paywall.' };
     }
-    html = response.getContentText();
+    blob = response.getBlob();
+    contentType = String(blob.getContentType() || '').toLowerCase().split(';')[0];
   } catch (e) {
     return { error: 'Could not reach the URL: ' + e.message };
   }
+
+  // A flyer image rather than a page. Sniffed from the response rather than the
+  // file extension, so a CDN URL with no .png on the end still works — and the
+  // bytes are already here for both the QR decode and Claude.
+  if (contentType.indexOf('image/') === 0) {
+    return extractFromFlyerImage_(url, blob, contentType);
+  }
+
+  var html = response.getContentText();
 
   // Extract JSON-LD structured data before stripping scripts — event sites like Luma
   // embed authoritative date/time here and it's the most reliable source.
@@ -281,6 +319,70 @@ function extractEventData(url) {
   if (url.indexOf('meetup.com') >= 0) {
     var meetupImg = extractMeetupImage_(html);
     if (meetupImg) result.image_url = meetupImg;
+  }
+
+  return { data: result };
+}
+
+var FLYER_PREAMBLE =
+  'This is an event flyer image. There is no HTML — read the event details off the picture itself.\n' +
+  'For the description, transcribe the flyer\'s own words: copy the text it prints, verbatim, in\n' +
+  'reading order. Never compose a description of your own, never describe the artwork, and never\n' +
+  'describe the QR codes. If the flyer states a repeating schedule, set recurrence_rule and\n' +
+  'recurrence_note. Do not attempt to read any QR code — those are decoded separately.';
+
+/**
+ * Extracts an event from a flyer image: QR codes decoded for the link, the
+ * picture itself read by Claude for the details.
+ *
+ * The description follows the same verbatim rule Facebook and Instagram events
+ * do — the source is just pixels this time, so it is transcribed rather than
+ * copied.
+ *
+ * @param {string} url - the image URL that was pasted
+ * @param {Blob} blob - already downloaded by the caller
+ * @param {string} contentType - lowercased, no parameters
+ * @returns {{data: Object}|{error: string, allowPaste?: true, originalUrl?: string}}
+ */
+function extractFromFlyerImage_(url, blob, contentType) {
+  if (CLAUDE_IMAGE_TYPES.indexOf(contentType) < 0) {
+    return { error: 'This is a ' + contentType + ' image, which cannot be read. ' +
+                    'Save it as a JPEG or PNG, or paste the flyer text instead.',
+             allowPaste: true, originalUrl: url };
+  }
+
+  var bytes = blob.getBytes();
+  if (bytes.length > CLAUDE_MAX_IMAGE_BYTES) {
+    return { error: 'This image is ' + (Math.round(bytes.length / 100000) / 10) +
+                    'MB, too large to read. Paste the flyer text instead.',
+             allowPaste: true, originalUrl: url };
+  }
+
+  var codes = decodeQrCodes_(blob);
+  var link = chooseEventLink(codes);
+
+  var block = claudeImageBlockFromBlob_(blob, contentType);
+  var content = FLYER_PREAMBLE + '\n\nSource URL: ' + url;
+  var result = callClaude_(content, false, null, block);
+  if (result === null) result = callClaude_(content, true, null, block);
+  if (result === null) {
+    return { error: 'Could not read this flyer. Paste the event text instead.',
+             allowPaste: true, originalUrl: url };
+  }
+
+  // The flyer itself is the event image, whatever Claude may have said.
+  result.image_url = url;
+
+  if (link) {
+    result.source_url = link.url;
+    result.source_link_label = link.label;
+  } else {
+    // Nothing decoded server-side. Hand the browser the bytes so it can try:
+    // reading pixels back from a canvas that loaded a cross-origin image throws
+    // unless the host sends Access-Control-Allow-Origin, and flyer CDNs
+    // generally do not — but a data: URI is same-origin by definition.
+    result.qr_pending = true;
+    result.image_data_uri = 'data:' + contentType + ';base64,' + Utilities.base64Encode(bytes);
   }
 
   return { data: result };
@@ -374,7 +476,7 @@ function extractICalSection_(html, pageUrl) {
  *     answer rather than to no answer at all.
  * @returns {Object|null}
  */
-function callClaude_(htmlContent, strict, imageUrl) {
+function callClaude_(htmlContent, strict, imageUrl, preparedBlock) {
   var apiKey = PropertiesService.getScriptProperties().getProperty('CLAUDE_API_KEY');
   var systemPrompt = strict
     ? EXTRACTION_PROMPT + '\n\nCRITICAL: Your previous response was not valid JSON. Return ONLY the raw JSON object starting with { and ending with }. Absolutely no other text.'
@@ -384,7 +486,7 @@ function callClaude_(htmlContent, strict, imageUrl) {
   systemPrompt = 'Today\'s date is ' + today + '.\n\n' + systemPrompt;
 
   var userText = 'Extract event details from this HTML:\n\n' + htmlContent;
-  var imageBlock = imageUrl ? claudeImageBlock_(imageUrl) : null;
+  var imageBlock = preparedBlock || (imageUrl ? claudeImageBlock_(imageUrl) : null);
 
   var payload = {
     model: CLAUDE_MODEL,
@@ -441,28 +543,40 @@ function claudeImageBlock_(imageUrl) {
       Logger.log('claudeImageBlock_: HTTP ' + resp.getResponseCode());
       return null;
     }
-
     var blob = resp.getBlob();
-    var mediaType = String(blob.getContentType() || '').toLowerCase().split(';')[0];
-    if (CLAUDE_IMAGE_TYPES.indexOf(mediaType) < 0) {
-      Logger.log('claudeImageBlock_: unusable content type ' + mediaType);
-      return null;
-    }
-
-    var bytes = blob.getBytes();
-    if (bytes.length > CLAUDE_MAX_IMAGE_BYTES) {
-      Logger.log('claudeImageBlock_: image is ' + bytes.length + ' bytes, too large to send');
-      return null;
-    }
-
-    return {
-      type: 'image',
-      source: { type: 'base64', media_type: mediaType, data: Utilities.base64Encode(bytes) }
-    };
+    return claudeImageBlockFromBlob_(blob, String(blob.getContentType() || '').toLowerCase().split(';')[0]);
   } catch (e) {
     Logger.log('claudeImageBlock_ error: ' + e.message);
     return null;
   }
+}
+
+/**
+ * Packs already-downloaded image bytes as a Claude content block.
+ *
+ * Split out from claudeImageBlock_ so the flyer path, which has the bytes in
+ * hand for the QR decode, does not fetch the same image a second time.
+ *
+ * @param {Blob} blob
+ * @param {string} mediaType - lowercased, no parameters
+ * @returns {Object|null} An image content block, or null if it cannot be sent
+ */
+function claudeImageBlockFromBlob_(blob, mediaType) {
+  if (CLAUDE_IMAGE_TYPES.indexOf(mediaType) < 0) {
+    Logger.log('claudeImageBlockFromBlob_: unusable content type ' + mediaType);
+    return null;
+  }
+
+  var bytes = blob.getBytes();
+  if (bytes.length > CLAUDE_MAX_IMAGE_BYTES) {
+    Logger.log('claudeImageBlockFromBlob_: image is ' + bytes.length + ' bytes, too large to send');
+    return null;
+  }
+
+  return {
+    type: 'image',
+    source: { type: 'base64', media_type: mediaType, data: Utilities.base64Encode(bytes) }
+  };
 }
 
 /**

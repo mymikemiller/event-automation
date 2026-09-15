@@ -183,6 +183,22 @@
     }
     .rec-banner.checking { background: var(--bg); color: var(--ink-soft); border-color: var(--line); }
     .rec-banner.single { background: var(--bg); color: var(--ink-soft); border-color: var(--line); }
+    .rec-banner.error { background: #fce8e6; color: var(--red); border-color: #f5c6c3; }
+
+    /* The schedule a stated rule produces, in place of a hand-built date list. */
+    .rule-controls {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      margin-bottom: 12px; font-size: .92rem; color: var(--ink-soft);
+    }
+    .rule-controls select, .rule-controls input {
+      min-height: var(--tap); padding: 6px 8px;
+      border: 1px solid var(--line); border-radius: 8px; font-size: .95rem;
+    }
+    .rule-controls input[type=number] { width: 5.5rem; }
+    .linkish {
+      background: none; border: none; padding: 0; margin-left: auto;
+      color: var(--blue); font-size: .9rem; text-decoration: underline; cursor: pointer;
+    }
 
     /* One occurrence per card. The old single-line layout squeezed a date,
        two times and a remove button onto one row -- unusable on a phone. */
@@ -235,6 +251,11 @@
       .action-bar button + button { margin-top: 0; }
     }
   </style>
+  <!-- Decodes flyer QR codes when the server-side service cannot. Pinned to an
+       exact version. Note this build has no multiple-barcode reader at all --
+       MultiFormatReader means multiple FORMATS, not multiple codes -- so
+       decodeQrInBrowser tiles the image itself. -->
+  <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
 </head>
 <body>
   <h1>Event Automation</h1>
@@ -281,9 +302,22 @@
       </div>
       <div class="field-group">
         <div id="recurrence-banner" class="rec-banner"></div>
+        <div id="rule-controls" class="rule-controls" style="display:none">
+          <label for="ends-mode">Ends</label>
+          <select id="ends-mode" onchange="onEndsChanged()">
+            <option value="never">Never</option>
+            <option value="count">After…</option>
+            <option value="until">On date…</option>
+          </select>
+          <input type="number" id="ends-count" min="1" max="400" value="12"
+                 style="display:none" onchange="onEndsChanged()">
+          <span id="ends-count-label" style="display:none">occurrences</span>
+          <input type="date" id="ends-date" style="display:none" onchange="onEndsChanged()">
+          <button type="button" class="linkish" onclick="clearRecurrenceRule()">Use a date list instead</button>
+        </div>
         <label>Dates *</label>
         <div id="date-rows"></div>
-        <button type="button" class="btn-add-date" onclick="addDateRow()">+ Add date</button>
+        <button type="button" class="btn-add-date" id="add-date" onclick="addDateRow()">+ Add date</button>
         <div id="end-time-note" class="warning-note"></div>
       </div>
     </div>
@@ -339,6 +373,13 @@
     var WEB_APP_URL = '<?= webAppUrl ?>';
 
     var sourceUrl = '';
+
+    // Set when extraction reports a recurrence the source stated as a rule
+    // rather than as dates. While it holds a rule the date list is a single
+    // start date and the rule supplies every occurrence after it.
+    var recurrenceRule = null;
+    var recurrenceEnds = { mode: 'never' };
+    var planInvalid = false;
 
     // ── Utilities ─────────────────────────────────────────────────────────────
 
@@ -527,14 +568,58 @@
             banner.className = 'rec-banner single';
             banner.textContent = 'Could not preview the schedule — it will still be checked when you submit.';
           })
-          .planRecurrence(occ);
+          .planRecurrence(occ, recurrenceRule, recurrenceEnds);
       }, 400);
+    }
+
+    function onEndsChanged() {
+      var mode = document.getElementById('ends-mode').value;
+      var byCount = mode === 'count';
+      var byDate = mode === 'until';
+      document.getElementById('ends-count').style.display = byCount ? '' : 'none';
+      document.getElementById('ends-count-label').style.display = byCount ? '' : 'none';
+      document.getElementById('ends-date').style.display = byDate ? '' : 'none';
+
+      recurrenceEnds = {
+        mode: mode,
+        count: +document.getElementById('ends-count').value,
+        date: document.getElementById('ends-date').value
+      };
+      onDatesChanged();
+    }
+
+    // A rule and a hand-built date list are two contradictory sources of truth,
+    // so only one is ever active. This is also the escape hatch when a pattern
+    // gets read off a flyer that does not really have one.
+    function clearRecurrenceRule() {
+      recurrenceRule = null;
+      recurrenceEnds = { mode: 'never' };
+      document.getElementById('ends-mode').value = 'never';
+      applyRuleMode();
+    }
+
+    function applyRuleMode() {
+      var active = !!recurrenceRule;
+      document.getElementById('rule-controls').style.display = active ? '' : 'none';
+      // The rule supplies every date after the first, so a second row would be
+      // a contradiction rather than an addition.
+      document.getElementById('add-date').style.display = active ? 'none' : '';
+      if (active) {
+        var rows = document.getElementById('date-rows');
+        while (rows.children.length > 1) rows.removeChild(rows.lastChild);
+      }
+      onDatesChanged();
     }
 
     function renderPlan(plan) {
       var banner = document.getElementById('recurrence-banner');
-      banner.className = 'rec-banner' + (plan.method === 'single' ? ' single' : '');
-      banner.textContent = (plan.method === 'single' ? '' : '↻ ') + plan.summary;
+      // 'invalid' means the start date does not fit the stated rule. The summary
+      // says which ordinal it actually is; submitEvent refuses until it is fixed.
+      planInvalid = plan.method === 'invalid';
+      banner.className = 'rec-banner' +
+        (planInvalid ? ' error' : plan.method === 'single' ? ' single' : '');
+      banner.textContent =
+        (planInvalid ? '⚠ ' : plan.method === 'single' ? '' : '↻ ') + plan.summary;
 
       // Flag rows whose time differs from the series.
       var rows = document.getElementById('date-rows').children;
@@ -546,8 +631,110 @@
       }
     }
 
+    // The server found no QR codes, so try in the browser.
+    //
+    // The image arrives as a data: URI rather than by URL on purpose: reading
+    // pixels back from a canvas that loaded a cross-origin image throws unless
+    // the host sends Access-Control-Allow-Origin, and flyer CDNs generally do
+    // not. A data: URI is same-origin by definition.
+    //
+    // This tiles the image itself because @zxing/library has no
+    // multiple-barcode reader in its UMD build -- MultiFormatReader means
+    // multiple FORMATS, one code -- and a flyer carries several. Measured on
+    // the People Sanctuary flyer: whole-image decoding finds nothing, while a
+    // two-scale tile scan finds 2 of its 3 codes in ~150 decodes.
+    //
+    // The one it misses is the stylised Instagram code -- teal, rounded
+    // modules, logo inset -- which zxing routinely cannot read. That is the
+    // right way round: chooseEventLink ranks social last, so the code this
+    // misses is the one it would have discarded anyway.
+    //
+    // Failure is silent by design. The event is already extracted and merely
+    // has no source link, which populateForm has already warned about.
+    function decodeQrInBrowser(dataUri) {
+      if (!window.ZXing) return;
+
+      var img = new Image();
+      img.onload = function () {
+        var w = img.naturalWidth, h = img.naturalHeight;
+        var canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        var ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+
+        var rgba;
+        try {
+          rgba = ctx.getImageData(0, 0, w, h).data;
+        } catch (e) {
+          return; // tainted canvas; nothing to be done here
+        }
+
+        // One byte per pixel: RGBLuminanceSource reads a Uint8ClampedArray as
+        // raw luminance, so handing it the RGBA buffer reads it four times too
+        // wide and finds nothing.
+        var lum = new Uint8ClampedArray(w * h);
+        for (var i = 0, p = 0; i < lum.length; i++, p += 4) {
+          lum[i] = (rgba[p] * 306 + rgba[p + 1] * 601 + rgba[p + 2] * 117) >> 10;
+        }
+
+        var hints = new Map();
+        hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+
+        function decodeRegion(x0, y0, rw, rh) {
+          var sub = new Uint8ClampedArray(rw * rh);
+          for (var y = 0; y < rh; y++) {
+            for (var x = 0; x < rw; x++) sub[y * rw + x] = lum[(y0 + y) * w + (x0 + x)];
+          }
+          var bitmap = new ZXing.BinaryBitmap(
+            new ZXing.HybridBinarizer(new ZXing.RGBLuminanceSource(sub, rw, rh)));
+          try {
+            return new ZXing.QRCodeReader().decode(bitmap, hints).getText();
+          } catch (e) {
+            return null;
+          }
+        }
+
+        var found = {};
+        var whole = decodeRegion(0, 0, w, h);
+        if (whole) found[whole] = true;
+
+        // Two scales, each stepped by half a tile so a code straddling one
+        // seam still falls whole inside another tile.
+        [3, 6].forEach(function (div) {
+          var tw = Math.floor(w / div), th = Math.floor(h / div);
+          if (tw < 40 || th < 40) return;
+          for (var y = 0; y + th <= h; y += th >> 1) {
+            for (var x = 0; x + tw <= w; x += tw >> 1) {
+              var hit = decodeRegion(x, y, tw, th);
+              if (hit) found[hit] = true;
+            }
+          }
+        });
+
+        var urls = Object.keys(found);
+        if (!urls.length) return;
+
+        // Ranked server-side, so the browser never holds a second copy of the rule.
+        google.script.run
+          .withSuccessHandler(function (link) {
+            if (!link) return;
+            sourceUrl = link.url;
+            document.getElementById('f-link-label').value = link.label;
+          })
+          .chooseEventLink(urls);
+      };
+      img.src = dataUri;
+    }
+
     function populateForm(data) {
       document.getElementById('f-title').value = data.title || '';
+
+      // Before any row is built: addDateRow re-plans as it goes, and would
+      // otherwise do so against the previous extraction's rule.
+      recurrenceRule = data.recurrence_rule || null;
+      recurrenceEnds = { mode: 'never' };
+      document.getElementById('ends-mode').value = 'never';
 
       var rows = document.getElementById('date-rows');
       rows.innerHTML = '';
@@ -555,6 +742,14 @@
         ? data.occurrences
         : [{ date: data.date, start_time: data.start_time, end_time: data.end_time }];
       occ.forEach(function (o) { addDateRow(o.date || '', o.start_time || '', o.end_time || ''); });
+
+      applyRuleMode();
+
+      // For a flyer the pasted URL is the image itself, and a calendar event
+      // whose "See Website for details" link opens a bare PNG is worse than one
+      // with no link — so a decoded QR link replaces it.
+      if (data.source_url) sourceUrl = data.source_url;
+      if (data.qr_pending && data.image_data_uri) decodeQrInBrowser(data.image_data_uri);
 
       document.getElementById('f-location').value = data.location || '';
       document.getElementById('f-description').value = data.description || '';
@@ -587,6 +782,11 @@
 
       if (!title) { setStatus('submit-status', 'error', 'Title is required.'); return; }
       if (!occurrences.length) { setStatus('submit-status', 'error', 'Add at least one date.'); return; }
+      if (planInvalid) {
+        setStatus('submit-status', 'error',
+                  document.getElementById('recurrence-banner').textContent.replace(/^⚠ /, ''));
+        return;
+      }
 
       var seen = {};
       for (var i = 0; i < occurrences.length; i++) {
@@ -609,6 +809,8 @@
       var eventData = {
         title: title,
         occurrences: occurrences,
+        recurrence_rule: recurrenceRule,
+        recurrence_ends: recurrenceEnds,
         location: document.getElementById('f-location').value.trim(),
         description: document.getElementById('f-description').value.trim(),
         source_link_label: document.getElementById('f-link-label').value.trim(),
@@ -641,7 +843,9 @@
       var statusMsg = result.occurrenceCount > 1
         ? (result.method === 'duplicate'
             ? 'Created ' + result.occurrenceCount + ' separate events.'
-            : 'Created one repeating event with ' + result.occurrenceCount + ' occurrences.')
+            : result.openEnded
+              ? 'Created one repeating event with no end date.'
+              : 'Created one repeating event with ' + result.occurrenceCount + ' occurrences.')
         : 'Event created successfully!';
       var statusType = 'success';
 
@@ -781,6 +985,12 @@
       document.getElementById('recurrence-banner').textContent = '';
       document.getElementById('recurrence-banner').className = 'rec-banner';
       sourceUrl = '';
+      recurrenceRule = null;
+      recurrenceEnds = { mode: 'never' };
+      planInvalid = false;
+      document.getElementById('ends-mode').value = 'never';
+      document.getElementById('rule-controls').style.display = 'none';
+      document.getElementById('add-date').style.display = '';
       clearStatus('url-status');
       clearStatus('paste-status');
       hide('paste-section');

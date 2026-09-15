@@ -142,6 +142,140 @@ the post text in by hand.
 
 ---
 
+## Image flyers
+
+Paste the URL of a flyer image and get an event out of it: the details read off
+the picture, the event link decoded from a QR code, and a schedule like
+"every 2nd and 4th Saturday every month" created as one repeating event.
+
+The URL is recognised by **content type, not file extension**. The generic path
+used to call `getContentText()` straight after fetching, which returns binary
+garbage for a PNG; it now checks `blob.getContentType()` first. Sniffing the
+response means a CDN URL with no `.png` on the end still works, and it costs
+nothing — the bytes are already in hand for both the QR decode and Claude.
+
+The flyer goes to Claude as inline bytes under the usual extraction prompt plus
+a preamble naming it a flyer. The description is **transcribed verbatim** from
+the text the flyer prints, the same rule Facebook and Instagram events follow —
+the source is just pixels this time.
+
+### Reading the QR codes
+
+A flyer usually writes no URL out in text. The one this was built for carries
+three QR codes labelled Instagram, Website and Facebook, and nothing else.
+
+Decoding happens server-side through `api.qrserver.com/v1/read-qr-code/`
+(goqr.me), which reads all three in one call. The **bytes are POSTed** rather
+than the URL handed over as `fileurl=`: measured 2026-09-15, goqr.me's own
+fetcher could not reach the Hostinger CDN the flyer sits on, answering
+`download error (could not establish connection)`.
+
+**The response shape is the trap worth remembering.** Every code comes back
+inside a *single* `symbol[0].data` string, newline-separated, with each code
+after the first prefixed `QR-Code:`:
+
+```json
+[{"type":"qrcode","symbol":[{"seq":0,"data":
+  "https://www.instagram.com/thepeoplesanctuary?igsh=…&utm_source=qr
+QR-Code:https://www.facebook.com/profile.php?id=61592091920619
+QR-Code:https://peoplesanctuary.org","error":null}]}]
+```
+
+Reading `symbol[0].data` verbatim — the obvious thing — gives one unusable
+three-line "URL". `parseQrResponse_` splits on newlines and strips the prefix.
+
+### Which code becomes the link
+
+`chooseEventLink` keeps only `http(s)` payloads — QR codes also carry vCards and
+wifi credentials — and ranks by host: a ticketing platform (Eventbrite, Luma,
+Meetup) first, then any other website, then social. Ties break on order of
+appearance, and only on ties: on the test flyer the social codes come **first**
+in reading order and the website comes last, so position alone would pick
+exactly the wrong one.
+
+The winner replaces the pasted URL as the event's source link. For a flyer the
+pasted URL is the image itself, and a "See Website for details" link that opens
+a bare PNG is worse than no link at all. A social URL that wins by default has
+its tracking parameters (`igsh`, `utm_source=qr`, `fbclid`) stripped first, the
+same treatment the Instagram and Facebook paths already give their links.
+
+### The browser fallback
+
+goqr.me is a free service with no SLA, so a second decoder backs it up: when the
+server decode comes back empty the page gets `qr_pending` and the image as a
+base64 `data:` URI, and decodes it with `@zxing/library`.
+
+It arrives as a `data:` URI rather than by URL because reading pixels back from
+a canvas that loaded a cross-origin image throws unless the host sends
+`Access-Control-Allow-Origin`, which flyer CDNs generally do not. A `data:` URI
+is same-origin by definition.
+
+Two things about that decoder are worth knowing, because both fail *silently*:
+
+- **Its UMD build has no multiple-barcode reader.** `MultiFormatReader` means
+  multiple *formats*, not multiple codes, and `GenericMultipleBarcodeReader` is
+  absent. Whole-image decoding of the test flyer finds **nothing**, so the page
+  tiles the image itself — two scales, each stepped by half a tile — which finds
+  two of its three codes in about 150 decodes and half a second.
+- **`RGBLuminanceSource` reads a `Uint8ClampedArray` as one byte per pixel.**
+  Handing it `getImageData`'s RGBA buffer reads it four times too wide and finds
+  nothing at all. The page builds a luminance plane first.
+
+The code it misses is the stylised Instagram one — teal, rounded modules, logo
+inset — which zxing routinely cannot read. That is the right way round: social
+ranks last, so the fallback loses the code it would have discarded anyway.
+
+If both decoders fail the event still extracts, simply with no source link,
+reported through the existing "Could not find:" warning.
+
+### Recurrence stated as a rule
+
+A flyer that says "every 2nd and 4th Saturday every month" states a rule and
+states no last date. That collides with the `COUNT`-always invariant above, and
+the invariant loses — but only here.
+
+The reasoning is the same one the invariant serves. `COUNT` exists so no date is
+created that the source never stated; here an endless rule *is* what the source
+stated, and picking a horizon would be the invention. A series expanded to a
+year of dates also dies silently when it runs out, with nothing to prompt a
+renewal. So extraction returns `recurrence_rule` — an RRULE body with no `COUNT`
+and no `UNTIL` — and exactly one date in `occurrences[]`.
+
+A rule fitted from a list of dates is unchanged and still always carries
+`COUNT`: it must never outrun the list it was fitted to.
+
+Four details worth knowing:
+
+- **The first date is computed, not extracted.** `nextOccurrences_` walks forward
+  from today, so the series starts on the next date the rule actually produces.
+  Claude supplies the time; arithmetic supplies the date.
+- **A cap is still expressed as `COUNT`.** The confirmation screen offers
+  *Ends: Never / After N / On date*, and the "on date" case is converted by
+  expanding the rule and counting — so `UNTIL` is still never emitted and there
+  is no DST or timezone ambiguity about where a series stops.
+- **`plan.dates` holds only the start date** for an open-ended series.
+  `findDuplicateDates`, the Drive filename and `tockifyStartMillis_` all read it,
+  and none of them should see a date the calendar has not been told about; a
+  separate `previewDates` feeds the banner.
+- **Editing the start date validates weekday and ordinal, not interval
+  alignment.** The rule carries no anchor, so `DTSTART` *is* the anchor and any
+  2nd-or-4th Saturday is a legitimate phase. Validating `INTERVAL` too would mean
+  inventing an anchor that does not exist. A date that does not fit is refused
+  with the reason — "Oct 3 is the first Saturday; this repeats every month on the
+  second and fourth Saturday".
+
+While a rule is active the date list is one row and **Add date** is hidden, since
+a rule and a hand-built list are contradictory sources of truth. *Use a date list
+instead* clears the rule and restores the normal multi-date UI — which is also
+the escape hatch if a pattern gets read off a flyer that does not have one.
+
+One bug this work turned up in passing: `/BYDAY=(\d*)([A-Z]{2})/` captures a
+single weekday, so `BYDAY=2SA,4SA` was read as `2SA` — both `expandRule_` and
+`describeCadence_` silently dropped every 4th Saturday. `parseByDay_` now parses
+the list.
+
+---
+
 ## Description line breaks
 
 The description travels as HTML — `<br>` for a break, `<ul>`/`<li>` for a list.
@@ -417,6 +551,44 @@ once hid a timezone bug that only appeared against live Google Calendar.
 
 `tests/` sits outside clasp's `rootDir`, so none of it is ever pushed.
 
+Don't load `CalendarService.gs` into `tests/run.js`: its
+`test_createAndDeleteEvent` and `test_duplicateDetection` are editor-only but
+carry no `_live` suffix, so the runner picks them up and they fail on
+`PropertiesService is not defined`. `tests/calendar.test.js` is how that file is
+covered locally.
+
+### Locally, against the real services
+
+`tests/run-live.js` runs the `*_live` tests under `tests/gas-shim.js`, which
+provides `UrlFetchApp`, `Utilities`, `PropertiesService` and `Session` backed by
+`curl`:
+
+```bash
+node tests/run-live.js Utilities.gs RecurrenceService.gs QrService.gs \
+  FacebookService.gs InstagramService.gs Extraction.gs
+```
+
+This exists because **`clasp run` cannot reach this project**. It calls an *API
+Executable* deployment, and `appsscript.json` publishes only a webapp; producing
+one means attaching the script to a standard GCP project and re-running OAuth,
+which is not worth risking a deployment whose bookmarked URL is pinned to one ID.
+
+`curl` is what makes the shim possible at all: `UrlFetchApp.fetch` is
+**synchronous** and Node's `fetch` is not, so `execFileSync('curl')` is the only
+way to keep a `.gs` function's shape intact.
+
+The Claude API key is read from `CLAUDE_API_KEY`, or from
+`~/.config/event-automation/claude_api_key` if that is unset. To fill that file
+without the key passing through shell history, copy it from Script Properties
+and run:
+
+```bash
+mkdir -p ~/.config/event-automation && (umask 077; pbpaste > ~/.config/event-automation/claude_api_key)
+```
+
+`Calendar` and `DriveApp` are **not** shimmed — anything touching those is still
+editor-only.
+
 ### In the Apps Script editor (anything touching Google)
 
 Google Apps Script doesn't have a test runner. Each test is a named function you run manually:
@@ -433,6 +605,8 @@ Available test functions:
 |----------|------|---------------|
 | `test_parseClaudeResponse` | Extraction.gs | JSON parsing logic |
 | `test_extractEventData_live` | Extraction.gs | Full extraction against a real URL (edit the URL in the function first) |
+| `test_extractFlyerImage_live` | Extraction.gs | A flyer image end to end — runs locally under `run-live.js` |
+| `test_decodeQrCodes_live` | QrService.gs | QR decoding against goqr.me — runs locally under `run-live.js` |
 | `test_createAndDeleteEvent` | CalendarService.gs | Calendar event creation and cleanup |
 | `test_duplicateDetection` | CalendarService.gs | Duplicate event check |
 | `test_createRecurringEvent_live` | CalendarService.gs | A repeating series produces exactly the expected instances |
