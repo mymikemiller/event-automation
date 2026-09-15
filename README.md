@@ -276,6 +276,65 @@ the list.
 
 ---
 
+## Sites that build their pages in the browser
+
+`peoplesanctuary.org` answers a plain fetch with 7,944 bytes of Vite/React
+bootstrap: an empty `<div id="root">`, an empty `<title>`, no `og:` tags, no
+JSON-LD, and **zero visible characters**. Every word of the event lives in
+`/assets/index-*.js`. It is the shape the Instagram section already describes —
+"a plain fetch returns a JavaScript shell" — just without a private embed
+endpoint to fall back to.
+
+Measured 2026-09-15:
+
+| Page | Visible text | `og:` | JSON-LD | `<title>` |
+|---|---|---|---|---|
+| peoplesanctuary.org/spooky-saturday | **0** | 0 | no | empty |
+| peoplesanctuary.org/events | **0** | 0 | no | empty |
+| meetup.com/vegaustin/events | 701 | 6 | yes | present |
+| lu.ma/discover | 2,669 | 9 | no | present |
+
+`pageHasNoContent_` requires all four signals to be absent together. Any one of
+them means there is something worth sending to Claude, and a page with real text
+is never rerouted however sparse its markup.
+
+Such a page is refetched through `r.jina.ai`, which renders it and returns
+markdown — 943 bytes in about 4 seconds for the test URL, carrying the title,
+the date, both times, the venue **and** the street address.
+
+Reading the JavaScript bundle was the obvious alternative and is the worse one.
+It was measured too: 1MB per extraction, every route's text interleaved so the
+right event has to be disambiguated by path, extraction coupled to Vite's exact
+output shape — and it yields *less*, because some strings sit inside nested
+`children` arrays that a `children:"…"` pattern never sees. The street address
+and the 4:30 PM start time are both among them.
+
+The proxy is a free service with no SLA, so a rate-limited or failed render is
+expected rather than exceptional: it returns null and the app falls back to
+pasting.
+
+### Parseable is not successful
+
+The deeper bug this exposed: Claude does not fail on a contentless page. It
+returns well-formed JSON with a placeholder title, today's date and `00:00`,
+and explains itself in `end_time_note` — for the page above, "the page is a
+client-side rendered app with no server-rendered content".
+
+Because that JSON parsed, `extractEventData` reported **success**. The
+confirmation screen filled with an event called "Unknown" dated today, and the
+paste fallback that Facebook and Instagram offer never fired. `extractionIsEmpty_`
+now catches a result with no title, a placeholder title, or no date, whatever
+its JSON said.
+
+Only title and date are required. Location, description and image are genuinely
+optional and the confirmation screen already warns about them; demanding them
+would send real events to the paste flow.
+
+One known gap: the rendered markdown carries no usable image URL, so a flyer on
+such a page has to be pasted into the Image URL box by hand.
+
+---
+
 ## Description line breaks
 
 The description travels as HTML — `<br>` for a break, `<ul>`/`<li>` for a list.
@@ -614,6 +673,8 @@ Available test functions:
 | `test_parseClaudeResponse` | Extraction.gs | JSON parsing logic |
 | `test_extractEventData_live` | Extraction.gs | Full extraction against a real URL (edit the URL in the function first) |
 | `test_extractFlyerImage_live` | Extraction.gs | A flyer image end to end — runs locally under `run-live.js` |
+| `test_fetchRenderedPage_live` | Extraction.gs | The rendering proxy returns a browser-built page — runs locally |
+| `test_extractSpaPage_live` | Extraction.gs | A client-side-rendered event page end to end — runs locally |
 | `test_decodeQrCodes_live` | QrService.gs | QR decoding against goqr.me — runs locally under `run-live.js` |
 | `test_createAndDeleteEvent` | CalendarService.gs | Calendar event creation and cleanup |
 | `test_duplicateDetection` | CalendarService.gs | Duplicate event check |
