@@ -316,6 +316,61 @@ function test_nextOccurrencesAndFit() {
   Logger.log('test_nextOccurrencesAndFit: ALL PASSED');
 }
 
+function test_planRecurrenceOpenEnded() {
+  var occ = [{ date: '2026-09-26', start_time: '19:00', end_time: '21:00' }];
+  var rule = 'FREQ=MONTHLY;BYDAY=2SA,4SA';
+
+  var plan = planRecurrence_(occ, 'America/Chicago', rule, null);
+  if (plan.method !== 'rrule') throw new Error('method: ' + plan.method);
+  if (!plan.openEnded) throw new Error('should be open-ended');
+  if (plan.recurrence[0] !== 'RRULE:FREQ=MONTHLY;BYDAY=2SA,4SA') throw new Error('rule: ' + plan.recurrence[0]);
+  if (/COUNT|UNTIL/.test(plan.recurrence[0])) throw new Error('open-ended rule must not terminate');
+  // Only the real start date reaches the caller — no invented date leaks into
+  // the duplicate check, the Drive filename or the Tockify start.
+  if (plan.dates.length !== 1 || plan.dates[0].date !== '2026-09-26') {
+    throw new Error('dates: ' + JSON.stringify(plan.dates));
+  }
+  if (plan.previewDates[1] !== '2026-10-10') throw new Error('preview: ' + plan.previewDates.join(','));
+  if (plan.summary.indexOf('second and fourth Saturday') < 0) throw new Error('summary: ' + plan.summary);
+  if (!/no end date/i.test(plan.summary)) throw new Error('summary should say it never ends: ' + plan.summary);
+
+  // Capped by count.
+  var capped = planRecurrence_(occ, 'America/Chicago', rule, { mode: 'count', count: 6 });
+  if (capped.recurrence[0].indexOf(';COUNT=6') < 0) throw new Error('count cap: ' + capped.recurrence[0]);
+  if (capped.openEnded) throw new Error('a capped series is not open-ended');
+
+  // A cap past the preview window still reports its real last date.
+  var long = planRecurrence_(occ, 'America/Chicago', rule, { mode: 'count', count: 12 });
+  if (long.summary.indexOf('Mar 13, 2027') < 0) throw new Error('long cap end: ' + long.summary);
+
+  // Capped by date, converted to COUNT — never UNTIL.
+  var until = planRecurrence_(occ, 'America/Chicago', rule, { mode: 'until', date: '2026-11-30' });
+  if (until.recurrence[0] !== 'RRULE:FREQ=MONTHLY;BYDAY=2SA,4SA;COUNT=5') {
+    throw new Error('until cap: ' + until.recurrence[0]);
+  }
+  if (/UNTIL/.test(until.recurrence[0])) throw new Error('UNTIL must never be emitted');
+
+  // An end date before the first occurrence is rejected, not silently emptied.
+  var tooSoon = planRecurrence_(occ, 'America/Chicago', rule, { mode: 'until', date: '2026-09-01' });
+  if (tooSoon.method !== 'invalid') throw new Error('too-soon end: ' + tooSoon.method);
+
+  // A start date that does not fit is rejected with a readable reason.
+  var bad = planRecurrence_([{ date: '2026-10-03', start_time: '19:00', end_time: '21:00' }],
+                            'America/Chicago', rule, null);
+  if (bad.method !== 'invalid') throw new Error('method: ' + bad.method);
+  if (bad.summary.indexOf('first Saturday') < 0) throw new Error('reason: ' + bad.summary);
+
+  // No rule: every existing path is untouched.
+  var plain = planRecurrence_([
+    { date: '2026-08-10', start_time: '19:00', end_time: '20:00' },
+    { date: '2026-08-17', start_time: '19:00', end_time: '20:00' }
+  ], 'America/Chicago', null, null);
+  if (plain.method !== 'rrule' || plain.openEnded) throw new Error('fitted path changed: ' + JSON.stringify(plain));
+  if (plain.recurrence[0].indexOf('COUNT=2') < 0) throw new Error('fitted rules still use COUNT');
+
+  Logger.log('test_planRecurrenceOpenEnded: ALL PASSED');
+}
+
 var DOW_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 var MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -636,6 +691,90 @@ function sameList_(a, b) {
   return true;
 }
 
+var RULE_MAX_EXPANSION = 400;
+var RULE_PREVIEW_COUNT = 6;
+
+/**
+ * A plan for a recurrence the source stated as a rule rather than as dates.
+ *
+ * Unlike a fitted rule, this one is open-ended by default. "Every 2nd and 4th
+ * Saturday every month" states no last date, so pinning a COUNT would invent an
+ * end the source never gave and the series would die silently a year on. The
+ * COUNT-always invariant still holds everywhere it earns its keep — a rule
+ * fitted from a list of dates must never outrun that list.
+ *
+ * A cap the user chooses is always expressed as COUNT, the "ends on a date"
+ * case included, so UNTIL never appears and there is no DST or timezone
+ * ambiguity about where the series stops.
+ *
+ * @param {Array} occ - normalized occurrences; occ[0] is the start
+ * @param {string} rule - RRULE body from extraction
+ * @param {{mode:string, count:number, date:string}|null} ends
+ * @returns {Object|null} a plan, or null to fall through to the fitted path
+ */
+function statedRulePlan_(occ, rule, ends) {
+  var clean = String(rule).replace(/^RRULE:/, '').replace(/;?(COUNT|UNTIL)=[^;]*/g, '');
+  if (!/FREQ=(DAILY|WEEKLY|MONTHLY)/.test(clean)) return null;
+
+  var start = occ[0];
+  if (!dateFitsRule_(start.date, clean)) {
+    return invalidRulePlan_(describeDateMismatch_(start.date, clean));
+  }
+
+  var count = 0;
+  if (ends && ends.mode === 'count' && ends.count > 0) {
+    count = Math.min(+ends.count, RULE_MAX_EXPANSION);
+  } else if (ends && ends.mode === 'until' && ends.date) {
+    count = expandRule_(clean, start.date, RULE_MAX_EXPANSION).filter(function (d) {
+      return d <= ends.date;
+    }).length;
+    if (!count) {
+      return invalidRulePlan_('That end date is before the first occurrence on ' +
+                              formatDateOnly_(start.date) + '.');
+    }
+  }
+
+  var line = 'RRULE:' + clean + (count ? ';COUNT=' + count : '');
+  var preview = expandRule_(clean, start.date, RULE_PREVIEW_COUNT);
+  // The real last date, which the preview window is too short to show once a
+  // cap runs past it.
+  var lastDate = count ? expandRule_(clean, start.date, count).pop() : null;
+
+  return {
+    method: 'rrule',
+    openEnded: !count,
+    summary: summarizeStatedRule_(clean, start, count, preview, lastDate),
+    base: { date: start.date, start_time: start.start_time, end_time: start.end_time },
+    recurrence: [line],
+    exceptions: [],
+    // Only the real start date. Everything downstream — findDuplicateDates, the
+    // Drive filename, tockifyStartMillis_ — reads plan.dates, and none of them
+    // should ever see a date the calendar has not been told about.
+    dates: [{ date: start.date, start_time: start.start_time, end_time: start.end_time,
+              isException: false }],
+    previewDates: preview
+  };
+}
+
+/** A plan the UI must refuse to submit, carrying the reason as its summary. */
+function invalidRulePlan_(reason) {
+  return { method: 'invalid', summary: reason, base: null, recurrence: null,
+           exceptions: [], dates: [], previewDates: [] };
+}
+
+/** Banner text for a stated rule. */
+function summarizeStatedRule_(rule, start, count, preview, lastDate) {
+  var head = 'Repeating event — ' + describeCadence_(rule) + ' at ' +
+             formatTime12_(start.start_time) + ', starting ' + formatDateOnly_(start.date) + '. ';
+  head += count
+    ? count + ' occurrences, ending ' + formatDateYear_(lastDate) + '.'
+    : 'No end date — it repeats indefinitely.';
+  if (preview.length > 1) {
+    head += ' Next: ' + preview.slice(0, 3).map(formatDateOnly_).join(', ') + '…';
+  }
+  return head;
+}
+
 /**
  * Decides how to create a set of occurrences in Google Calendar.
  *
@@ -650,11 +789,16 @@ function sameList_(a, b) {
  * @returns {{method:string, summary:string, base:Object|null,
  *            recurrence:Array<string>|null, exceptions:Array, dates:Array}}
  */
-function planRecurrence_(occurrences, tz) {
+function planRecurrence_(occurrences, tz, rule, ends) {
   var occ = normalizeOccurrences_(occurrences);
   if (occ.length === 0) {
     return { method: 'none', summary: 'No valid dates yet.', base: null,
              recurrence: null, exceptions: [], dates: [] };
+  }
+
+  if (rule) {
+    var stated = statedRulePlan_(occ, rule, ends);
+    if (stated) return stated;
   }
 
   var time = modalTime_(occ);
@@ -698,8 +842,8 @@ function planRecurrence_(occurrences, tz) {
  * @param {Array} occurrences - [{date, start_time, end_time}]
  * @returns {Object} plan
  */
-function planRecurrence(occurrences) {
-  return planRecurrence_(occurrences, Session.getScriptTimeZone());
+function planRecurrence(occurrences, rule, ends) {
+  return planRecurrence_(occurrences, Session.getScriptTimeZone(), rule || null, ends || null);
 }
 
 /**
@@ -723,6 +867,14 @@ function formatShortDate_(s) {
 function formatDateOnly_(s) {
   var p = s.split('-');
   return MONTH_NAMES[+p[1] - 1] + ' ' + (+p[2]);
+}
+/**
+ * "Mar 13, 2027". The other formatters omit the year because a fitted series
+ * spans weeks, but a series capped by count can end years out, where a bare
+ * "ending Mar 13" says nothing about which March.
+ */
+function formatDateYear_(s) {
+  return formatDateOnly_(s) + ', ' + s.split('-')[0];
 }
 
 /** '7:00 PM' */
