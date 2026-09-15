@@ -289,6 +289,33 @@ function test_describeCadenceMultiByDay() {
   Logger.log('test_describeCadenceMultiByDay: ALL PASSED');
 }
 
+function test_nextOccurrencesAndFit() {
+  // From Tue 2026-09-15 the 2nd Saturday (Sep 12) has passed; Sep 26 is next.
+  var next = nextOccurrences_('FREQ=MONTHLY;BYDAY=2SA,4SA', '2026-09-15', 3);
+  if (next.join(',') !== '2026-09-26,2026-10-10,2026-10-24') throw new Error('got ' + next.join(','));
+
+  if (!dateFitsRule_('2026-09-26', 'FREQ=MONTHLY;BYDAY=2SA,4SA')) throw new Error('Sep 26 is the 4th Saturday');
+  if (!dateFitsRule_('2026-10-10', 'FREQ=MONTHLY;BYDAY=2SA,4SA')) throw new Error('Oct 10 is the 2nd Saturday');
+  if (dateFitsRule_('2026-10-03', 'FREQ=MONTHLY;BYDAY=2SA,4SA')) throw new Error('Oct 3 is the 1st Saturday');
+  if (dateFitsRule_('2026-10-12', 'FREQ=MONTHLY;BYDAY=2SA,4SA')) throw new Error('Oct 12 is a Monday');
+
+  // Interval alignment is deliberately NOT checked: the rule carries no anchor,
+  // so whichever date is picked becomes DTSTART and defines the phase.
+  if (!dateFitsRule_('2026-11-14', 'FREQ=MONTHLY;INTERVAL=2;BYDAY=2SA')) throw new Error('any 2nd Saturday anchors');
+
+  if (!dateFitsRule_('2026-09-16', 'FREQ=WEEKLY;BYDAY=WE')) throw new Error('Sep 16 is a Wednesday');
+  if (dateFitsRule_('2026-09-16', 'FREQ=WEEKLY;BYDAY=TH')) throw new Error('Sep 16 is not a Thursday');
+  if (!dateFitsRule_('2026-09-16', 'FREQ=DAILY')) throw new Error('daily fits any date');
+  if (!dateFitsRule_('2026-09-15', 'FREQ=MONTHLY;BYMONTHDAY=15')) throw new Error('BYMONTHDAY=15');
+  if (dateFitsRule_('2026-09-16', 'FREQ=MONTHLY;BYMONTHDAY=15')) throw new Error('Sep 16 is not the 15th');
+
+  var msg = describeDateMismatch_('2026-10-03', 'FREQ=MONTHLY;BYDAY=2SA,4SA');
+  if (msg.indexOf('first Saturday') < 0) throw new Error('should name the ordinal: ' + msg);
+  if (msg.indexOf('second and fourth Saturday') < 0) throw new Error('should name the rule: ' + msg);
+
+  Logger.log('test_nextOccurrencesAndFit: ALL PASSED');
+}
+
 var DOW_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 var MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -538,6 +565,69 @@ function expandRule_(rule, startYmd, n) {
   }
 
   return [];
+}
+
+/**
+ * The next n dates a rule generates on or after `fromYmd`.
+ *
+ * expandRule_ already skips candidates earlier than its start date, so this is
+ * simply an expansion anchored at a day rather than at a known occurrence.
+ *
+ * @param {string} rule - RRULE body, with or without the RRULE: prefix
+ * @param {string} fromYmd - inclusive lower bound, YYYY-MM-DD
+ * @param {number} n
+ * @returns {Array<string>}
+ */
+function nextOccurrences_(rule, fromYmd, n) {
+  return expandRule_(rule, fromYmd, n);
+}
+
+/**
+ * Whether a date could be the start of a series following `rule`.
+ *
+ * Checks the BYDAY / BYMONTHDAY constraint only, never interval alignment: a
+ * rule stated with no end carries no anchor, so DTSTART *is* the anchor and any
+ * date matching the weekday-and-ordinal constraint is a legitimate phase.
+ * Validating INTERVAL too would mean inventing an anchor that does not exist.
+ *
+ * @param {string} ymd - YYYY-MM-DD
+ * @param {string} rule
+ * @returns {boolean}
+ */
+function dateFitsRule_(ymd, rule) {
+  var freq = (rule.match(/FREQ=([A-Z]+)/) || [])[1];
+  var byd = parseByDay_(rule);
+
+  if (freq === 'WEEKLY') {
+    if (!byd.length) return true;
+    for (var i = 0; i < byd.length; i++) if (byd[i].dow === dowOf_(ymd)) return true;
+    return false;
+  }
+
+  if (freq === 'MONTHLY') {
+    if (byd.length) {
+      for (var j = 0; j < byd.length; j++) {
+        if (byd[j].dow === dowOf_(ymd) && (!byd[j].ord || byd[j].ord === ordinalInMonth_(ymd))) return true;
+      }
+      return false;
+    }
+    var md = (rule.match(/BYMONTHDAY=(\d+)/) || [])[1];
+    return !md || +md === dayOfMonth_(ymd);
+  }
+
+  return true; // DAILY, or a FREQ we do not constrain
+}
+
+/**
+ * Why a date does not fit a rule, in the vocabulary the source used.
+ * @param {string} ymd
+ * @param {string} rule
+ * @returns {string}
+ */
+function describeDateMismatch_(ymd, rule) {
+  var ordinals = ['', 'first', 'second', 'third', 'fourth', 'fifth'];
+  return formatDateOnly_(ymd) + ' is the ' + ordinals[ordinalInMonth_(ymd)] + ' ' +
+         DAY_NAMES_FULL[dowOf_(ymd)] + '; this repeats ' + describeCadence_(rule) + '.';
 }
 
 function sameList_(a, b) {
