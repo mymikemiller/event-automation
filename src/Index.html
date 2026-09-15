@@ -850,19 +850,29 @@
       hide('confirm-section');
       show('result-section');
 
-      var statusMsg = result.occurrenceCount > 1
-        ? (result.method === 'duplicate'
-            ? 'Created ' + result.occurrenceCount + ' separate events.'
-            : result.openEnded
-              ? 'Created one repeating event with no end date.'
+      // openEnded is tested FIRST, before the count. An open-ended series has
+      // exactly one entry in plan.dates — only its start date, so that no
+      // invented date reaches the duplicate check or the Drive filename — so it
+      // arrives here with occurrenceCount === 1 and any test gated on
+      // `occurrenceCount > 1` silently reports it as an ordinary single event.
+      var statusMsg = result.openEnded
+        ? 'Created one repeating event with no end date.'
+        : result.occurrenceCount > 1
+          ? (result.method === 'duplicate'
+              ? 'Created ' + result.occurrenceCount + ' separate events.'
               : 'Created one repeating event with ' + result.occurrenceCount + ' occurrences.')
-        : 'Event created successfully!';
+          : 'Event created successfully!';
       var statusType = 'success';
 
       if (result.duplicateDates && result.duplicateDates.length) {
-        statusMsg += ' Note: ' + result.duplicateDates.length + ' of ' + result.occurrenceCount +
-                     ' date(s) already had an event with this title (' +
-                     result.duplicateDates.join(', ') + ').';
+        // Same trap in the wording: "1 of 1 date(s)" is nonsense for a series
+        // with no count, where the one date checked is the start date.
+        statusMsg += result.openEnded
+          ? ' Note: its start date (' + result.duplicateDates.join(', ') +
+            ') already had an event with this title.'
+          : ' Note: ' + result.duplicateDates.length + ' of ' + result.occurrenceCount +
+            ' date(s) already had an event with this title (' +
+            result.duplicateDates.join(', ') + ').';
         statusType = 'warn';
       }
       if (result.warnings && result.warnings.length) {
