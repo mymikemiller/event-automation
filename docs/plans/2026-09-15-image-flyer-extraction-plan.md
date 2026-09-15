@@ -1362,6 +1362,14 @@ git commit -m "feat: confirm an open-ended series and validate its start date"
 
 ## Task 10: Browser QR fallback
 
+> **Correction, found during implementation:** the code below is wrong and the
+> shipped version in `src/Index.html` supersedes it. `@zxing/library`'s UMD build
+> has **no multiple-barcode reader** — `GenericMultipleBarcodeReader` does not
+> exist in it, and `MultiFormatReader` means multiple *formats*. The published
+> code tiles the image itself and builds a luminance plane by hand, because
+> `RGBLuminanceSource` reads a `Uint8ClampedArray` as one byte per pixel rather
+> than as RGBA. See the design doc.
+
 **Files:**
 - Modify: `src/Index.html`
 

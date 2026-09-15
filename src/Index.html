@@ -251,6 +251,11 @@
       .action-bar button + button { margin-top: 0; }
     }
   </style>
+  <!-- Decodes flyer QR codes when the server-side service cannot. Pinned to an
+       exact version. Note this build has no multiple-barcode reader at all --
+       MultiFormatReader means multiple FORMATS, not multiple codes -- so
+       decodeQrInBrowser tiles the image itself. -->
+  <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
 </head>
 <body>
   <h1>Event Automation</h1>
@@ -626,6 +631,102 @@
       }
     }
 
+    // The server found no QR codes, so try in the browser.
+    //
+    // The image arrives as a data: URI rather than by URL on purpose: reading
+    // pixels back from a canvas that loaded a cross-origin image throws unless
+    // the host sends Access-Control-Allow-Origin, and flyer CDNs generally do
+    // not. A data: URI is same-origin by definition.
+    //
+    // This tiles the image itself because @zxing/library has no
+    // multiple-barcode reader in its UMD build -- MultiFormatReader means
+    // multiple FORMATS, one code -- and a flyer carries several. Measured on
+    // the People Sanctuary flyer: whole-image decoding finds nothing, while a
+    // two-scale tile scan finds 2 of its 3 codes in ~150 decodes.
+    //
+    // The one it misses is the stylised Instagram code -- teal, rounded
+    // modules, logo inset -- which zxing routinely cannot read. That is the
+    // right way round: chooseEventLink ranks social last, so the code this
+    // misses is the one it would have discarded anyway.
+    //
+    // Failure is silent by design. The event is already extracted and merely
+    // has no source link, which populateForm has already warned about.
+    function decodeQrInBrowser(dataUri) {
+      if (!window.ZXing) return;
+
+      var img = new Image();
+      img.onload = function () {
+        var w = img.naturalWidth, h = img.naturalHeight;
+        var canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        var ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+
+        var rgba;
+        try {
+          rgba = ctx.getImageData(0, 0, w, h).data;
+        } catch (e) {
+          return; // tainted canvas; nothing to be done here
+        }
+
+        // One byte per pixel: RGBLuminanceSource reads a Uint8ClampedArray as
+        // raw luminance, so handing it the RGBA buffer reads it four times too
+        // wide and finds nothing.
+        var lum = new Uint8ClampedArray(w * h);
+        for (var i = 0, p = 0; i < lum.length; i++, p += 4) {
+          lum[i] = (rgba[p] * 306 + rgba[p + 1] * 601 + rgba[p + 2] * 117) >> 10;
+        }
+
+        var hints = new Map();
+        hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+
+        function decodeRegion(x0, y0, rw, rh) {
+          var sub = new Uint8ClampedArray(rw * rh);
+          for (var y = 0; y < rh; y++) {
+            for (var x = 0; x < rw; x++) sub[y * rw + x] = lum[(y0 + y) * w + (x0 + x)];
+          }
+          var bitmap = new ZXing.BinaryBitmap(
+            new ZXing.HybridBinarizer(new ZXing.RGBLuminanceSource(sub, rw, rh)));
+          try {
+            return new ZXing.QRCodeReader().decode(bitmap, hints).getText();
+          } catch (e) {
+            return null;
+          }
+        }
+
+        var found = {};
+        var whole = decodeRegion(0, 0, w, h);
+        if (whole) found[whole] = true;
+
+        // Two scales, each stepped by half a tile so a code straddling one
+        // seam still falls whole inside another tile.
+        [3, 6].forEach(function (div) {
+          var tw = Math.floor(w / div), th = Math.floor(h / div);
+          if (tw < 40 || th < 40) return;
+          for (var y = 0; y + th <= h; y += th >> 1) {
+            for (var x = 0; x + tw <= w; x += tw >> 1) {
+              var hit = decodeRegion(x, y, tw, th);
+              if (hit) found[hit] = true;
+            }
+          }
+        });
+
+        var urls = Object.keys(found);
+        if (!urls.length) return;
+
+        // Ranked server-side, so the browser never holds a second copy of the rule.
+        google.script.run
+          .withSuccessHandler(function (link) {
+            if (!link) return;
+            sourceUrl = link.url;
+            document.getElementById('f-link-label').value = link.label;
+          })
+          .chooseEventLink(urls);
+      };
+      img.src = dataUri;
+    }
+
     function populateForm(data) {
       document.getElementById('f-title').value = data.title || '';
 
@@ -648,6 +749,7 @@
       // whose "See Website for details" link opens a bare PNG is worse than one
       // with no link — so a decoded QR link replaces it.
       if (data.source_url) sourceUrl = data.source_url;
+      if (data.qr_pending && data.image_data_uri) decodeQrInBrowser(data.image_data_uri);
 
       document.getElementById('f-location').value = data.location || '';
       document.getElementById('f-description').value = data.description || '';

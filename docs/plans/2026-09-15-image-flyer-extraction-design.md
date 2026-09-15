@@ -75,9 +75,27 @@ same-origin by definition and leaves the canvas readable. 490KB of PNG is about
 650KB encoded — carried by `google.script.run`, and paid only in the fallback
 case.
 
-The page decodes with `@zxing/library` from a CDN, whose multi-code reader
-finds several symbols in one image. `jsQR` returns only the first, which on this
-flyer means Instagram and nothing else.
+The page decodes with `@zxing/library` from a CDN — and has to tile the image
+itself. **The UMD build ships no multiple-barcode reader at all.**
+`MultiFormatReader` means multiple *formats*, not multiple codes;
+`GenericMultipleBarcodeReader` is simply absent. Measured 2026-09-15 against the
+bundle: whole-image decoding of the test flyer finds **nothing**, while a
+two-scale tile scan — tiles at a third and a sixth of the width, each stepped by
+half a tile so a code straddling one seam falls whole inside another — finds two
+of its three codes in about 150 decodes and 0.5s.
+
+The third is the stylised Instagram code: teal, rounded modules, logo inset.
+zxing routinely cannot read those, and goqr.me can. That failure is the right
+way round — `chooseEventLink` ranks social last, so the code the fallback misses
+is the one it would have discarded anyway. A flyer whose *only* code is a
+stylised one degrades to no link, which is the same outcome as no codes at all.
+
+One trap inside that: `RGBLuminanceSource` reads a `Uint8ClampedArray` as **one
+byte per pixel**, raw luminance. Handing it the RGBA buffer straight from
+`getImageData` reads it four times too wide and silently finds nothing. The page
+converts to a luminance plane first. `HTMLCanvasElementLuminanceSource` would
+avoid that, but it only reads a whole canvas, which is the one thing that does
+not work here.
 
 The decoded URLs go back to `chooseEventLink(urls)` on the server, so the
 selection rule below lives in exactly one place.
