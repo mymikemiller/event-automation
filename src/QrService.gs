@@ -61,6 +61,21 @@ function test_chooseEventLink() {
   Logger.log('test_chooseEventLink: ALL PASSED');
 }
 
+function test_decodeQrCodes_live() {
+  var resp = UrlFetchApp.fetch(
+    'https://horizons-cdn.hostinger.com/c3648fa5-28bf-4fa9-adf5-de27dbf4d0e8/sss-QlOin.png',
+    { muteHttpExceptions: true, followRedirects: true });
+  if (resp.getResponseCode() !== 200) throw new Error('flyer fetch: HTTP ' + resp.getResponseCode());
+
+  var codes = decodeQrCodes_(resp.getBlob());
+  if (codes.length !== 3) throw new Error('expected 3 codes, got ' + codes.length + ': ' + codes.join(' | '));
+
+  var pick = chooseEventLink(codes);
+  if (pick.url !== 'https://peoplesanctuary.org') throw new Error('picked ' + pick.url);
+
+  Logger.log('test_decodeQrCodes_live: ALL PASSED');
+}
+
 var QR_API_URL = 'https://api.qrserver.com/v1/read-qr-code/';
 
 // Tier 1: a code that leads straight to an RSVP page. Tier 3: social profiles.
@@ -195,4 +210,37 @@ function chooseEventLink(urls) {
   }
 
   return best ? { url: best.url, label: best.label } : null;
+}
+
+/**
+ * Decodes every QR code in an image, or [] if the service cannot.
+ *
+ * The bytes are POSTed rather than the URL handed over as `fileurl=`: measured
+ * 2026-09-15, goqr.me's own fetcher could not reach the Hostinger CDN the test
+ * flyer sits on ("download error (could not establish connection)"), and the
+ * caller has the bytes in hand anyway.
+ *
+ * Never throws. An empty result is the caller's signal to ask the browser to
+ * decode instead — goqr.me is a free service with no SLA, and the whole feature
+ * turns on getting a real URL off the flyer.
+ *
+ * @param {Blob} blob - the image
+ * @returns {Array<string>} decoded payloads
+ */
+function decodeQrCodes_(blob) {
+  try {
+    var resp = UrlFetchApp.fetch(QR_API_URL, {
+      method: 'post',
+      payload: { file: blob },
+      muteHttpExceptions: true
+    });
+    if (resp.getResponseCode() !== 200) {
+      Logger.log('decodeQrCodes_: HTTP ' + resp.getResponseCode());
+      return [];
+    }
+    return parseQrResponse_(resp.getContentText());
+  } catch (e) {
+    Logger.log('decodeQrCodes_ error: ' + e.message);
+    return [];
+  }
 }
