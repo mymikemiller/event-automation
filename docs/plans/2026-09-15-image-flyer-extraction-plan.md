@@ -22,6 +22,7 @@
 - **Apps Script has one global scope** across all `.gs` files — a function in `QrService.gs` is callable from `Extraction.gs` with no import.
 - **A function whose name ends in `_` is private** and cannot be called from `google.script.run`. `chooseEventLink` and `planRecurrence` deliberately have no underscore.
 - **Test fixtures go inside the `.gs` file or inside the vm context, never in the Node host realm** — `instanceof Array` is realm-sensitive and a host-built array silently takes malformed-input paths. `tests/run.js` documents this; it has cost people hours.
+- **Load `Utilities.gs` alongside `RecurrenceService.gs`.** `normalizeOccurrences_` calls `addHours_`, which lives in `Utilities.gs`; Apps Script shares one global scope so it is always present there, but the Node runner only loads the files it is given. `node tests/run.js RecurrenceService.gs` alone fails `test_normalizeOccurrences` with `addHours_ is not defined` — that is the runner, not a regression.
 
 ---
 
@@ -218,7 +219,7 @@ Expected: `200 image/png 490730`
 
 **Step 4: Confirm the pure runner still works**
 
-Run: `node tests/run.js RecurrenceService.gs`
+Run: `node tests/run.js Utilities.gs RecurrenceService.gs`
 Expected: all PASS, `0 failed`
 
 **Step 5: Commit**
@@ -578,7 +579,7 @@ function test_describeCadenceMultiByDay() {
 
 **Step 2: Run to verify it fails**
 
-Run: `node tests/run.js RecurrenceService.gs`
+Run: `node tests/run.js Utilities.gs RecurrenceService.gs`
 Expected: `test_expandRuleMultiByDay` FAILs (only 2SA dates emitted), `test_describeCadenceMultiByDay` FAILs on the "second and fourth" wording.
 
 **Step 3: Implement**
@@ -671,7 +672,7 @@ Replace the `MONTHLY` clause of `describeCadence_` (and its `byday` variable) wi
 
 **Step 4: Run to verify**
 
-Run: `node tests/run.js RecurrenceService.gs`
+Run: `node tests/run.js Utilities.gs RecurrenceService.gs`
 Expected: all PASS, including every pre-existing test — `fitWeekly_`/`fitMonthlyByWeekday_` verification goes through `expandRule_`, so a regression here shows up immediately.
 
 **Step 5: Commit**
@@ -719,7 +720,7 @@ function test_nextOccurrencesAndFit() {
 
 **Step 2: Run to verify it fails**
 
-Run: `node tests/run.js RecurrenceService.gs`
+Run: `node tests/run.js Utilities.gs RecurrenceService.gs`
 Expected: FAIL with `nextOccurrences_ is not defined`
 
 **Step 3: Implement**
@@ -791,7 +792,7 @@ function describeDateMismatch_(ymd, rule) {
 
 **Step 4: Run to verify**
 
-Run: `node tests/run.js RecurrenceService.gs`
+Run: `node tests/run.js Utilities.gs RecurrenceService.gs`
 Expected: all PASS
 
 **Step 5: Commit**
@@ -857,7 +858,7 @@ function test_planRecurrenceOpenEnded() {
 
 **Step 2: Run to verify it fails**
 
-Run: `node tests/run.js RecurrenceService.gs`
+Run: `node tests/run.js Utilities.gs RecurrenceService.gs`
 Expected: FAIL — `planRecurrence_` ignores the extra arguments, so `method` is `single`.
 
 **Step 3: Implement**
@@ -968,7 +969,7 @@ function planRecurrence(occurrences, rule, ends) {
 
 **Step 4: Run to verify**
 
-Run: `node tests/run.js RecurrenceService.gs`
+Run: `node tests/run.js Utilities.gs RecurrenceService.gs`
 Expected: all PASS, every pre-existing recurrence test included.
 
 **Step 5: Commit**
@@ -1153,7 +1154,7 @@ function test_extractFlyerImage_live() {
 Run: `node tests/run-live.js Extraction.gs QrService.gs RecurrenceService.gs`
 Expected: `1 passed, 0 failed`. This calls the real Claude API — it costs a request and needs the key file from the top of this plan.
 
-Then confirm nothing else broke: `node tests/run.js Extraction.gs` and `node tests/run.js RecurrenceService.gs`.
+Then confirm nothing else broke: `node tests/run.js Extraction.gs` and `node tests/run.js Utilities.gs RecurrenceService.gs`.
 
 **Step 7: Commit**
 
@@ -1194,9 +1195,9 @@ In `submitEvent`, the same two lines, replacing:
 
 **Step 3: Verify**
 
-`planRecurrence_` is exercised by `node tests/run.js RecurrenceService.gs`; these two call sites are `Calendar`/`Drive`-bound and are verified by the live submit in Task 12.
+`planRecurrence_` is exercised by `node tests/run.js Utilities.gs RecurrenceService.gs`; these two call sites are `Calendar`/`Drive`-bound and are verified by the live submit in Task 12.
 
-Run: `node tests/run.js RecurrenceService.gs CalendarService.gs`
+Run: `node tests/run.js Utilities.gs RecurrenceService.gs CalendarService.gs`
 Expected: all PASS (`CalendarService.gs` contributes only its pure tests).
 
 **Step 4: Commit**
@@ -1458,7 +1459,7 @@ Add an **Image flyers** section after **Instagram posts**, in the established vo
 Also add a short **Running the tests** note if none exists:
 
 ```
-node tests/run.js RecurrenceService.gs QrService.gs   # pure, no network
+node tests/run.js Utilities.gs RecurrenceService.gs QrService.gs   # pure, no network
 node tests/run-live.js QrService.gs Extraction.gs     # real services, needs the Claude key
 ```
 
@@ -1476,7 +1477,7 @@ git commit -m "docs: record image flyer extraction"
 **Step 1: Full local suite**
 
 ```bash
-node tests/run.js RecurrenceService.gs QrService.gs Extraction.gs CalendarService.gs TockifyUtil.gs
+node tests/run.js Utilities.gs RecurrenceService.gs QrService.gs Extraction.gs CalendarService.gs TockifyUtil.gs
 node tests/run-live.js QrService.gs Extraction.gs
 ```
 
