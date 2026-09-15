@@ -541,6 +541,7 @@ node tests/run.js FacebookService.gs Extraction.gs RecurrenceService.gs Utilitie
 node tests/run.js MeetupService.gs                                                     # 13 tests
 node tests/run.js TockifyUtil.gs                                                       # 1 test
 node tests/calendar.test.js                                                            # 5 tests
+node tests/index.test.js                                                               # 6 tests
 ```
 
 `tests/run.js` loads `.gs` files into a Node `vm` context with `Logger`/`Session`
@@ -548,6 +549,13 @@ shims and runs their `test_*` functions, skipping anything named `*_live`.
 `tests/calendar.test.js` covers `CalendarService.gs` against a stub that filters
 instances by `timeMin`/`timeMax` the way the real API does — a permissive stub
 once hid a timezone bug that only appeared against live Google Calendar.
+
+`tests/index.test.js` runs the page's real `showResult` against the shapes
+`submitEvent` returns, with the DOM stubbed. It exists because a message gated on
+`occurrenceCount > 1` was unreachable for an open-ended series, which carries
+exactly one date — the page called an endless series "Event created
+successfully!" like any single event. Anything gated on `occurrenceCount` or
+`openEnded` belongs there.
 
 `tests/` sits outside clasp's `rootDir`, so none of it is ever pushed.
 
